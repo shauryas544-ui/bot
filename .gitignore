@@ -1,0 +1,89 @@
+# ==========================================
+# Security & Secrets (Never commit tokens!)
+# ==========================================
+.env
+.env.*
+config.json
+token.txt
+secrets.py
+
+# ==========================================
+# Project-Specific Temporary & Output Files
+# ==========================================
+temp_*
+translated_*
+part_*
+*.epub
+*.docx
+*.pdf
+
+# Exception: Keep requirements or documentation text files
+!requirements.txt
+!README.md
+
+# ==========================================
+# Python & Bytecode Cache
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ==========================================
+# Virtual Environments
+# ==========================================
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ==========================================
+# IDE & Code Editors (PyCharm / VS Code)
+# ==========================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ==========================================
+# Operating System Junk
+# ==========================================
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ==========================================
+# Logs & Databases
+# ==========================================
+*.log
+bot.log
+*.sqlite
+*.sqlite3
+.env
+.env
