@@ -1,67 +1,79 @@
 # Telegram Document Translation & File Splitting Bot
 
-A production-ready, asynchronous Telegram Bot engineered for document translation and file splitting supporting `.txt`, `.docx`, and `.epub` formats.
+A production-grade, asynchronous Telegram Bot engineered for document translation and dynamic file splitting supporting `.txt`, `.docx`, `.epub`, and `.pdf` formats.
+
+Designed to work out-of-the-box on **Localhost (Windows/Mac/Linux)** and **Cloud Platforms (Railway, Render Free Web Service, VPS)** with zero configuration crashes.
 
 ---
 
 ## 🏗️ Architecture Overview
 
-The codebase is organized following clean architectural principles and strict separation of concerns:
+The project provides two seamless execution modes:
+
+1. **`bot.py`**: A fully functional, self-contained single-file script containing the entire bot logic, handlers, cloud health-check dummy server, and processing engines.
+2. **Modular Architecture** (`main.py`, `config.py`, `services/`, `handlers/`): Production-grade separation of concerns with full unit and integration test coverage.
 
 ```text
 telegram_doc_translator_bot/
-├── config.py                 # Bot tokens, dedicated ThreadPoolExecutor, session manager with TTL
-├── requirements.txt          # Python dependency specifications
+├── bot.py                    # Standalone, self-contained single-file production bot
+├── main.py                   # Modular application entrypoint
+├── config.py                 # Configuration, ThreadPoolExecutor, session management & TTL
+├── requirements.txt          # Dependency specifications (including pypdf)
+├── Procfile                  # Cloud process declaration (worker: python bot.py)
 ├── .env.example              # Environment variables template
 ├── services/
-│   ├── __init__.py
-│   ├── translator.py         # Chunked translation engine with GoogleTranslator, rate limiter & session pooling
-│   └── splitter.py           # Text, Word (.docx), and E-Book (.epub) splitting engines with file rollback
+│   ├── translator.py         # Multi-format translation engine (.txt, .docx, .epub, .pdf)
+│   └── splitter.py           # Multi-format splitting engine (.txt, .docx, .epub, .pdf)
 ├── handlers/
-│   ├── __init__.py
-│   ├── commands.py           # /start, /language commands & inline keyboard matrix
-│   ├── files.py              # Document upload, split transmission, plain text translation & media filter
-│   └── callbacks.py          # Inline button actions (Translate, Split, Set Language)
-├── tests/
-│   ├── __init__.py
-│   ├── test_services.py      # Unit tests for translation, splitting & session logic
-│   └── test_bot_flows.py     # Isolated async integration tests for bot handlers
-└── main.py                   # Telegram ApplicationBuilder polling entrypoint & global error handler
+│   ├── commands.py           # /start, /language commands & inline matrix
+│   ├── files.py              # File downloads, uploads, and media filters
+│   └── callbacks.py          # Inline button callback dispatcher
+└── tests/                    # 25 automated unit & async integration tests
 ```
 
 ---
 
-## 🚀 Key Features & Specifications
+## 🚀 Key Features
 
-### 1. Asynchronous Concurrency
-- Uses `python-telegram-bot` (v20+ async engine).
-- **Non-blocking concurrency:** All CPU-heavy tasks (HTML DOM parsing with BeautifulSoup, EPUB repackaging, DOCX XML manipulation) and network translation requests are offloaded to a dedicated `ThreadPoolExecutor` via `await loop.run_in_executor(THREAD_POOL, func, *args)` to ensure polling never freezes.
+### 1. Bulletproof Token Loading & Localhost Zero-Crash Fallback
+- Resolves `.env` using absolute path: `load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))`.
+- Checks both `TELEGRAM_BOT_TOKEN` and `BOT_TOKEN`.
+- **Localhost Fallback:** If the token is not found in `.env` or environment variables, prompts the user interactively in the terminal via `input(...)` and saves it, preventing infinite crash loops.
 
-### 2. Ephemeral File Lifecycle & Storage Safety
-- Uploaded files are downloaded to temporary storage (`temp_storage/temp_{user_id}_{timestamp}_{filename}`).
-- Output files use unique collision-free session IDs (`translated_{session_id}_{filename}`).
-- Translation output files and split partitions are wrapped in strict `try...finally` blocks.
-- If splitting or translation fails midway, all partial output chunks are immediately rolled back and purged from disk.
-- Session TTL expiry (default 30 mins) prunes abandoned files automatically on startup and during periodic sweeps.
+### 2. Render & Railway Cloud Web Service Compatibility
+- Includes a lightweight background dummy HTTP health server (`threading` + `http.server`) bound to `os.getenv("PORT", 8080)`.
+- Responds with `200 OK` on `/` and `/healthz` so Render's Free Web Service passes initial deployment health checks while Telegram `run_polling()` runs concurrently.
 
-### 3. Translation Subsystem
-- **Chunked Text Processor:** Slices text into blocks up to 3,500 characters preserving paragraph, sentence, and word boundaries.
-- **Fault-Tolerant Engine:** Uses `deep-translator` (`GoogleTranslator`) with thread-safe rate throttling, persistent `requests.Session` connection pooling, and jittered exponential backoff.
-- **TXT Translation:** Decodes UTF-8 (with fallback to Latin-1), translates iteratively, outputs `translated_<filename>.txt`.
-- **DOCX Translation:** Iterates through paragraphs and table cells, translating text while preserving paragraph and run styling.
-- **EPUB Translation:** Iterates over `ITEM_DOCUMENT` nodes, parses DOM via `BeautifulSoup`, targets text leaf nodes (`<p>`, `<h1>`-`<h5>`, `<span>`), translates content while preserving HTML hierarchy, CSS styling, and repacks into a valid `.epub`.
-- **Large Plain Text Messages:** If a user sends a raw message and the translated output exceeds 4,000 characters, it is returned as an in-memory `.txt` file using `io.BytesIO`.
+### 3. Supported Formats & Interaction
+* **Direct Text Messages:**
+  - Translates text directly to the user's active language.
+  - Automatically streams responses exceeding 4,000 characters as in-memory `.txt` files using `io.BytesIO`.
+* **Document Ingestion (`.txt`, `.docx`, `.epub`, `.pdf`):**
+  - Downloads files asynchronously to isolated staging paths (`temp_{user_id}_{timestamp}_{filename}`).
+  - Displays an interactive inline keyboard:
+    - `🌐 Translate File`
+    - `✂️ Split File`
+* **Dynamic Splitting Subsystem:**
+  - **PDF Splitting:** Uses `pypdf` (`PdfReader` and `PdfWriter`) to slice every N pages into separate PDF files (`part_1.pdf`, `part_2.pdf`).
+  - **EPUB Splitting:** Slices `ITEM_DOCUMENT` items into separate valid EPUB containers with navigation, spine, CSS styles, and metadata rebuilt.
+  - **DOCX Splitting:** Groups non-empty paragraphs into new `.docx` documents preserving run-level styles and font attributes.
+  - **TXT Splitting:** Slices lines into clean `.txt` documents.
+* **Translation Subsystem:**
+  - Slices text into safe blocks (<= 3,500 chars) using `deep-translator` (`GoogleTranslator`) with thread-safe rate throttling and exponential backoff.
+  - **PDF Translation:** Extracts text page-by-page using `pypdf` and compiles translated content into a clean, formatted Word (`.docx`) document.
+  - **EPUB Translation:** Parses XHTML chapters using `BeautifulSoup`, replaces text in leaf tags (`<p>`, `<h1>`-`<h5>`, `<span>`) while keeping styles and DOM intact.
+  - **DOCX Translation:** Iterates through paragraphs and tables, translating while preserving formatting.
+  - **TXT Translation:** Translates iteratively and outputs `translated_<filename>.txt`.
 
-### 4. Splitting Subsystem
-- Prompts for dynamic user chunk size:
-  - `.epub`: Chapters per volume (e.g. 5, 10). Reconstructs spine, TOC, NCX, metadata, and styles.
-  - `.docx`: Paragraphs per file (e.g. 25, 50). Preserves run formatting and styles.
-  - `.txt`: Lines per file (e.g. 200, 500).
-- Delivers all resulting parts (`part_1.ext`, `part_2.ext`...) sequentially with polite spacing delays and automatic Telegram `RetryAfter` flood control retries.
+### 4. Concurrency & Ephemeral Lifecycle
+- Offloads all CPU-heavy work (HTML DOM parsing, PDF manipulation, DOCX XML formatting) and network translation requests to worker threads via `await loop.run_in_executor(THREAD_POOL, ...)`.
+- Temporary files use unique session UUIDs to eliminate race conditions between concurrent users.
+- Wrapped in strict `try...finally` blocks with automatic rollback if any error occurs midway.
+- Automatic session TTL pruning (default 30 mins) deletes abandoned files on startup and periodically.
 
 ---
 
-## 🛠️ Installation & Setup
+## 🛠️ Localhost Setup (PowerShell / Windows / Mac)
 
 ### 1. Install Dependencies
 ```powershell
@@ -73,31 +85,54 @@ Copy `.env.example` to `.env`:
 ```powershell
 cp .env.example .env
 ```
-Edit `.env` and configure your settings:
+Edit `.env` and set your token:
 ```env
 TELEGRAM_BOT_TOKEN=your_token_from_botfather
 DEFAULT_LANGUAGE=hi
 TEMP_STORAGE_DIR=./temp_storage
 SESSION_TTL_SECONDS=1800
 ```
+*(If you do not configure `.env`, `bot.py` will prompt you for your token in the terminal on first run).*
 
----
-
-## 🧪 Running Tests
-
-Execute the automated test suite:
+### 3. Run the Bot
+You can run the self-contained script:
 ```powershell
-python -m unittest discover tests
+python bot.py
 ```
-
-All 23 unit and integration tests run deterministically without external rate limits, verifying session management, file operations, translation, splitting, and async Telegram handlers.
-
----
-
-## 🤖 Running the Bot
-
-Start the bot with:
+Or run the modular architecture:
 ```powershell
 python main.py
 ```
 
+---
+
+## ☁️ Cloud Deployment
+
+### Deploying to Railway
+1. Push this repository to GitHub or deploy via Railway CLI.
+2. In Railway, click **New Project** -> **Deploy from GitHub repo**.
+3. Under **Variables**, add:
+   - `TELEGRAM_BOT_TOKEN` = `your_token_from_botfather`
+   - `DEFAULT_LANGUAGE` = `hi`
+4. Railway automatically detects the `Procfile` (`worker: python bot.py`).
+
+### Deploying to Render (Free Web Service)
+1. In Render, select **New Web Service** and connect your repository.
+2. Configure settings:
+   - **Environment:** `Python 3`
+   - **Build Command:** `pip install -r requirements.txt`
+   - **Start Command:** `python bot.py`
+3. Under **Environment Variables**, add:
+   - `TELEGRAM_BOT_TOKEN` = `your_token_from_botfather`
+   - `PORT` = `8080`
+4. The built-in dummy HTTP server automatically responds `200 OK` on `$PORT`, satisfying Render's health checks while the bot polls Telegram.
+
+---
+
+## 🧪 Running Automated Tests
+
+Run the full test suite (25 unit and async integration tests):
+```powershell
+python -m unittest discover tests
+```
+All tests run deterministically in ~2 seconds without external network dependencies.

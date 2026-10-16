@@ -84,6 +84,4 @@ $RECYCLE.BIN/
 *.log
 bot.log
 *.sqlite
-*.sqlite3
-.env
-.env
+*.sqlite3

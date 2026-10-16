@@ -358,18 +358,59 @@ def translate_epub(input_path: str, output_path: str, target_lang: str) -> str:
     return output_path
 
 
+def translate_pdf(input_path: str, output_path: str, target_lang: str) -> str:
+    """
+    Extracts text page-by-page from PDF using pypdf, translates content,
+    and formats into a clean Word (.docx) document.
+    """
+    import pypdf
+    try:
+        reader = pypdf.PdfReader(input_path)
+    except Exception as exc:
+        raise ValueError(f"Corrupted or invalid PDF document: {exc}")
+
+    total_pages = len(reader.pages)
+    if total_pages == 0:
+        raise ValueError("The provided PDF has no pages.")
+
+    doc = docx.Document()
+    doc.add_heading("Translated Document", level=0)
+
+    found_text = False
+    for i, page in enumerate(reader.pages, start=1):
+        page_text = page.extract_text() or ""
+        page_text = page_text.strip()
+        if page_text:
+            found_text = True
+            doc.add_heading(f"Page {i}", level=2)
+            translated = translate_text(page_text, target_lang=target_lang)
+            for para in translated.split("\n\n"):
+                if para.strip():
+                    doc.add_paragraph(para.strip())
+
+    if not found_text:
+        doc.add_paragraph(
+            "[Notice: No extractable text found in this PDF. It may contain scanned images or rasterized pages.]"
+        )
+
+    doc.save(output_path)
+    return output_path
+
+
 def translate_file(input_path: str, ext: str, target_lang: str, original_filename: str) -> str:
     """
     Router for file translation based on extension.
     Outputs path to translated file in TEMP_DIR with a unique session ID
     to prevent file collision among concurrent users.
+    PDF files are translated into formatted .docx for clean readability.
     """
     stem, _ = os.path.splitext(original_filename)
     session_id = uuid.uuid4().hex[:8]
-    output_filename = f"translated_{session_id}_{stem}{ext}"
+    ext = ext.lower()
+    out_ext = ".docx" if ext == ".pdf" else ext
+    output_filename = f"translated_{session_id}_{stem}{out_ext}"
     output_path = os.path.join(TEMP_DIR, output_filename)
 
-    ext = ext.lower()
     try:
         if ext == ".txt":
             return translate_txt(input_path, output_path, target_lang)
@@ -377,6 +418,8 @@ def translate_file(input_path: str, ext: str, target_lang: str, original_filenam
             return translate_docx(input_path, output_path, target_lang)
         elif ext == ".epub":
             return translate_epub(input_path, output_path, target_lang)
+        elif ext == ".pdf":
+            return translate_pdf(input_path, output_path, target_lang)
         else:
             raise ValueError(f"Unsupported file format: {ext}")
     except Exception:
@@ -387,4 +430,5 @@ def translate_file(input_path: str, ext: str, target_lang: str, original_filenam
             except OSError:
                 pass
         raise
+
 

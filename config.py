@@ -19,7 +19,11 @@ load_dotenv(dotenv_path=ENV_FILE)
 logger = logging.getLogger("telegram_doc_bot")
 
 # Bot API Configuration (stripped of trailing spaces, carriage returns, or quotes)
-RAW_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip().strip('"').strip("'")
+RAW_BOT_TOKEN = (
+    os.getenv("TELEGRAM_BOT_TOKEN")
+    or os.getenv("BOT_TOKEN")
+    or ""
+).strip().strip('"').strip("'")
 BOT_TOKEN = RAW_BOT_TOKEN
 
 # Temporary storage directory path (configurable via .env, defaults to temp_storage)
@@ -53,8 +57,8 @@ SUPPORTED_LANGUAGES: Dict[str, str] = {
     "mr": "Marathi 🇮🇳",
 }
 
-# Supported document extensions
-SUPPORTED_EXTENSIONS = {".txt", ".docx", ".epub"}
+# Supported document extensions (including PDF)
+SUPPORTED_EXTENSIONS = {".txt", ".docx", ".epub", ".pdf"}
 
 # Translation engine character block limits (Specification: max 3500 chars)
 MAX_CHUNK_CHARS = 3500

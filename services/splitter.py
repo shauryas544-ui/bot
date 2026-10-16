@@ -221,6 +221,48 @@ def split_epub(input_path: str, chapters_per_volume: int, original_filename: str
         raise
 
 
+def split_pdf(input_path: str, pages_per_file: int, original_filename: str = "") -> List[str]:
+    """
+    PDF Splitting: Slices every N pages into separate PDF files.
+    Guarantees strict file cleanup on failure.
+    """
+    import pypdf
+    if pages_per_file <= 0:
+        raise ValueError("Page count must be greater than zero.")
+
+    try:
+        reader = pypdf.PdfReader(input_path)
+    except Exception as exc:
+        raise ValueError(f"Corrupted or invalid PDF document: {exc}")
+
+    total_pages = len(reader.pages)
+    if total_pages == 0:
+        raise ValueError("The provided PDF contains no pages.")
+
+    output_files: List[str] = []
+    session_id = uuid.uuid4().hex[:8]
+
+    try:
+        part_idx = 1
+        for start_idx in range(0, total_pages, pages_per_file):
+            writer = pypdf.PdfWriter()
+            end_idx = min(start_idx + pages_per_file, total_pages)
+            for page_num in range(start_idx, end_idx):
+                writer.add_page(reader.pages[page_num])
+
+            filename = f"split_{session_id}_part_{part_idx}.pdf"
+            out_path = os.path.join(TEMP_DIR, filename)
+            with open(out_path, "wb") as f_out:
+                writer.write(f_out)
+            output_files.append(out_path)
+            part_idx += 1
+
+        return output_files
+    except Exception:
+        _rollback_files(output_files)
+        raise
+
+
 def split_file(input_path: str, ext: str, chunk_size: int, original_filename: str) -> List[str]:
     """
     Router for file splitting based on extension.
@@ -233,6 +275,9 @@ def split_file(input_path: str, ext: str, chunk_size: int, original_filename: st
         return split_docx(input_path, paragraphs_per_file=chunk_size, original_filename=original_filename)
     elif ext == ".epub":
         return split_epub(input_path, chapters_per_volume=chunk_size, original_filename=original_filename)
+    elif ext == ".pdf":
+        return split_pdf(input_path, pages_per_file=chunk_size, original_filename=original_filename)
     else:
         raise ValueError(f"Unsupported file format: {ext}")
+
 

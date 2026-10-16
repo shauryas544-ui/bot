@@ -99,7 +99,7 @@ async def document_upload_handler(update: Update, context: ContextTypes.DEFAULT_
             f"⚠️ *Unsupported File Format*\n\n"
             f"Received: `{original_filename}`\n"
             f"Supported document formats are: {supported_list}\n\n"
-            "Please send a valid `.txt`, `.docx`, or `.epub` file.",
+            "Please send a valid `.txt`, `.docx`, `.epub`, or `.pdf` file.",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -171,14 +171,14 @@ async def document_upload_handler(update: Update, context: ContextTypes.DEFAULT_
 async def unsupported_media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Informs users sending photos, videos, voice notes, stickers, or audio
-    that only text and documents (.txt, .docx, .epub) are supported.
+    that only text and documents (.txt, .docx, .epub, .pdf) are supported.
     """
     if update.message:
         await update.message.reply_text(
             "⚠️ *Unsupported Media Type*\n\n"
-            "I can only process documents in `.txt`, `.docx`, or `.epub` format, "
+            "I can only process documents in `.txt`, `.docx`, `.epub`, or `.pdf` format, "
             "or plain text messages for direct translation.\n\n"
-            "Please send a document file (.txt, .docx, .epub) as an uncompressed attachment.",
+            "Please send a document file (.txt, .docx, .epub, .pdf) as an uncompressed attachment.",
             parse_mode=ParseMode.MARKDOWN,
         )
 

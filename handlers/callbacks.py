@@ -109,7 +109,8 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
         )
 
         stem, _ = os.path.splitext(active_file.name)
-        out_filename = f"translated_{stem}{active_file.ext}"
+        out_ext = os.path.splitext(output_path)[1]
+        out_filename = f"translated_{stem}{out_ext}"
 
         # Transmit translated file to Telegram with rate-limit resiliency
         sent = False
@@ -181,29 +182,35 @@ async def handle_action_split(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
 
     ext = active_file.ext.lower()
-    if ext == ".epub":
+    if ext == ".pdf":
+        prompt_text = (
+            "📖 *PDF Splitting Selected*\n\n"
+            "How many pages per split PDF? (e.g., `5`, `10`, `20`)\n"
+            "_Please reply with a positive whole number._"
+        )
+    elif ext == ".epub":
         prompt_text = (
             "📖 *EPUB Splitting Selected*\n\n"
             "How many chapters per volume? (e.g., `5`, `10`)\n"
-            "_Please reply with a positive number._"
+            "_Please reply with a positive whole number._"
         )
     elif ext == ".docx":
         prompt_text = (
             "📄 *DOCX Splitting Selected*\n\n"
             "How many paragraphs per file? (e.g., `25`, `50`)\n"
-            "_Please reply with a positive number._"
+            "_Please reply with a positive whole number._"
         )
     elif ext == ".txt":
         prompt_text = (
             "📝 *TXT Splitting Selected*\n\n"
             "How many lines per file? (e.g., `200`, `500`)\n"
-            "_Please reply with a positive number._"
+            "_Please reply with a positive whole number._"
         )
     else:
         prompt_text = (
             "✂️ *File Splitting Selected*\n\n"
             "How many units per file chunk?\n"
-            "_Please reply with a positive number._"
+            "_Please reply with a positive whole number._"
         )
 
     await query.message.reply_text(prompt_text, parse_mode=ParseMode.MARKDOWN)

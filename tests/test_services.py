@@ -26,12 +26,14 @@ from services.translator import (
     translate_txt,
     translate_docx,
     translate_epub,
+    translate_pdf,
     translate_file,
 )
 from services.splitter import (
     split_txt,
     split_docx,
     split_epub,
+    split_pdf,
     split_file,
 )
 from handlers.commands import build_language_keyboard
@@ -217,6 +219,28 @@ class TestTranslatorService(unittest.TestCase):
                 os.remove(output_file)
 
 
+    def test_translate_pdf(self, mock_translate):
+        import pypdf
+        input_file = os.path.join(TEMP_DIR, "sample_input.pdf")
+        output_file = os.path.join(TEMP_DIR, "sample_output.docx")
+
+        writer = pypdf.PdfWriter()
+        writer.add_blank_page(width=200, height=200)
+        with open(input_file, "wb") as f:
+            writer.write(f)
+
+        try:
+            res_path = translate_pdf(input_file, output_file, target_lang="es")
+            self.assertTrue(os.path.exists(res_path))
+            read_doc = docx.Document(res_path)
+            self.assertTrue(len(read_doc.paragraphs) > 0)
+        finally:
+            if os.path.exists(input_file):
+                os.remove(input_file)
+            if os.path.exists(output_file):
+                os.remove(output_file)
+
+
 class TestSplitterService(unittest.TestCase):
     def test_split_txt(self):
         input_file = os.path.join(TEMP_DIR, "test_split.txt")
@@ -303,7 +327,34 @@ class TestSplitterService(unittest.TestCase):
                 if os.path.exists(p):
                     os.remove(p)
 
+    def test_split_pdf(self):
+        import pypdf
+        input_file = os.path.join(TEMP_DIR, "test_split.pdf")
+        writer = pypdf.PdfWriter()
+        for _ in range(5):
+            writer.add_blank_page(width=100, height=100)
+        with open(input_file, "wb") as f:
+            writer.write(f)
+
+        parts = []
+        try:
+            parts = split_pdf(input_file, pages_per_file=2, original_filename="test_split.pdf")
+            self.assertEqual(len(parts), 3)
+            for p in parts:
+                self.assertTrue(os.path.exists(p))
+            r1 = pypdf.PdfReader(parts[0])
+            self.assertEqual(len(r1.pages), 2)
+            r3 = pypdf.PdfReader(parts[2])
+            self.assertEqual(len(r3.pages), 1)
+        finally:
+            if os.path.exists(input_file):
+                os.remove(input_file)
+            for p in parts:
+                if os.path.exists(p):
+                    os.remove(p)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
