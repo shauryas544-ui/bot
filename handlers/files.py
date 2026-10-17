@@ -6,7 +6,7 @@ import logging
 from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
-from telegram.error import RetryAfter, TimedOut
+from telegram.error import RetryAfter, TimedOut, BadRequest
 from telegram.ext import ContextTypes
 
 from config import (
@@ -61,6 +61,21 @@ async def safe_send_document_with_retry(
                     parse_mode=parse_mode,
                 )
             return
+        except BadRequest as b_err:
+            if parse_mode:
+                try:
+                    with open(document_path, "rb") as doc_file:
+                        await chat.send_document(
+                            document=doc_file,
+                            filename=filename,
+                            caption=caption,
+                            parse_mode=None,
+                        )
+                    return
+                except Exception:
+                    pass
+            logger.error(f"Failed to send document: {b_err}")
+            raise
         except RetryAfter as flood_err:
             wait_time = flood_err.retry_after + 1
             logger.warning(
@@ -237,10 +252,10 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode=ParseMode.MARKDOWN,
         )
 
-        loop = asyncio.get_running_loop()
         generated_parts = []
 
         try:
+            loop = asyncio.get_running_loop()
             # Offload heavy splitting to dedicated ThreadPoolExecutor
             generated_parts = await loop.run_in_executor(
                 THREAD_POOL,
@@ -278,10 +293,16 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
         except Exception as exc:
             logger.error(f"Error executing file split: {exc}", exc_info=True)
-            await update.effective_chat.send_message(
-                f"❌ *Splitting Failed:*\n`{str(exc)}`\nPlease try again.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
+            safe_err = str(exc).replace("`", "'")
+            try:
+                await update.effective_chat.send_message(
+                    f"❌ *Splitting Failed:*\n`{safe_err}`\n\nPlease try again.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception:
+                await update.effective_chat.send_message(
+                    f"❌ Splitting Failed: {safe_err}\n\nPlease try again."
+                )
         finally:
             # Ephemeral File Lifecycle: Delete all generated parts immediately after transmission
             for p in generated_parts:
@@ -309,8 +330,8 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # Show typing indicator
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
-    loop = asyncio.get_running_loop()
     try:
+        loop = asyncio.get_running_loop()
         # Offload chunked text translation to dedicated ThreadPoolExecutor
         translated_text = await loop.run_in_executor(
             THREAD_POOL,
@@ -338,8 +359,14 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     except Exception as exc:
         logger.error(f"Error during plain text translation: {exc}", exc_info=True)
-        await message.reply_text(
-            f"❌ *Translation Failed:*\n`{str(exc)}`\nPlease try again later.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        safe_err = str(exc).replace("`", "'")
+        try:
+            await message.reply_text(
+                f"❌ *Translation Failed:*\n`{safe_err}`\n\nPlease try again later.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception:
+            await message.reply_text(
+                f"❌ Translation Failed: {safe_err}\n\nPlease try again later."
+            )
 

@@ -7,6 +7,7 @@ import ebooklib
 from ebooklib import epub
 
 from config import TEMP_DIR
+from services.translator import _sanitize_epub_book, safe_lxml_scope
 
 logger = logging.getLogger("telegram_doc_bot.splitter")
 
@@ -212,7 +213,9 @@ def split_epub(input_path: str, chapters_per_volume: int, original_filename: str
 
             filename = f"split_{session_id}_part_{idx}.epub"
             out_path = os.path.join(TEMP_DIR, filename)
-            epub.write_epub(out_path, new_book)
+            _sanitize_epub_book(new_book, metadata_lang)
+            with safe_lxml_scope():
+                epub.write_epub(out_path, new_book)
             output_files.append(out_path)
 
         return output_files

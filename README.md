@@ -131,7 +131,7 @@ python main.py
 
 ## 🧪 Running Automated Tests
 
-Run the full test suite (25 unit and async integration tests):
+Run the full test suite (26 unit and async integration tests):
 ```powershell
 python -m unittest discover tests
 ```

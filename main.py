@@ -1,5 +1,12 @@
 import sys
 import logging
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 from telegram import Update
 from telegram.error import (
     InvalidToken,
@@ -25,6 +32,8 @@ from config import (
     mask_token,
     is_valid_token_format,
     cleanup_expired_temp_files,
+    start_health_server,
+    verify_telegram_token,
 )
 from handlers.commands import start_handler, language_handler
 from handlers.callbacks import callback_query_handler
@@ -89,13 +98,19 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
     logger.error(f"Exception occurred while handling an update: {error_str}", exc_info=err)
     if isinstance(update, Update) and update.effective_chat:
+        clean_err = error_str[:150].replace("`", "'")
         try:
             await update.effective_chat.send_message(
-                "⚠️ *An unexpected error occurred while processing your request.*\n"
-                "Please try again in a few moments."
+                f"⚠️ *An error occurred while processing:*\n`{clean_err}`\n\nPlease try again.",
+                parse_mode=ParseMode.MARKDOWN,
             )
         except Exception:
-            pass
+            try:
+                await update.effective_chat.send_message(
+                    f"⚠️ An error occurred while processing: {clean_err}\n\nPlease try again."
+                )
+            except Exception:
+                pass
 
 
 def create_application():
@@ -129,7 +144,7 @@ def create_application():
     # 4. Non-Document Media Handler (Photos, Videos, Audio, Voice, Stickers)
     application.add_handler(
         MessageHandler(
-            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.ANIMATION | filters.STICKER,
+            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.ANIMATION | filters.Sticker.ALL,
             unsupported_media_handler,
         )
     )
@@ -156,6 +171,9 @@ def main() -> None:
     """Application entrypoint with polling loop and resilient error catching."""
     logger.info("Initializing Telegram Document Translation & Splitting Bot...")
 
+    # Start dummy cloud health check HTTP server for Render/Railway if PORT is set
+    start_health_server()
+
     if not BOT_TOKEN:
         print(
             "\n" + "=" * 70 + "\n"
@@ -177,11 +195,24 @@ def main() -> None:
     if not app:
         sys.exit(1)
 
+    valid, bot_username, err = verify_telegram_token(BOT_TOKEN)
+    bot_link = f"https://t.me/{bot_username}" if bot_username else "Telegram"
+
+    print("\n" + "=" * 70)
+    print(" 🚀 TELEGRAM BOT IS ONLINE & READY! / बॉट चालू हो गया है!")
+    print("=" * 70)
+    print(f" 🔗 Bot Username : @{bot_username}")
+    print(f" 🌐 Direct Link  : {bot_link}")
+    print("=" * 70)
+    print(" 👉 Open the link above in Telegram and tap 'START'!")
+    print(" 👉 Telegram में ऊपर दिए गए लिंक को खोलें और 'START' दबाएँ!")
+    print("=" * 70 + "\n")
+
     logger.info(f"Bot configured with token: {mask_token(BOT_TOKEN)}")
-    logger.info("Starting bot polling loop (drop_pending_updates=True)...")
+    logger.info("Starting bot polling loop...")
 
     try:
-        app.run_polling(drop_pending_updates=True)
+        app.run_polling(drop_pending_updates=False)
     except InvalidToken:
         print(
             "\n" + "=" * 70 + "\n"

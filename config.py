@@ -4,9 +4,21 @@ import time
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
+
+import sys
+import threading
+import http.server
+import requests
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 # Base directory determination
 BASE_DIR = Path(__file__).resolve().parent
@@ -18,13 +30,132 @@ load_dotenv(dotenv_path=ENV_FILE)
 # Logger setup
 logger = logging.getLogger("telegram_doc_bot")
 
+
+def mask_token(token: str) -> str:
+    """Safely mask token for logs or user display without leaking secrets."""
+    if not token:
+        return "<EMPTY>"
+    parts = token.split(":")
+    if len(parts) == 2:
+        return f"{parts[0]}:{'*' * 8}..."
+    return f"{token[:4]}...{'*' * 8}"
+
+
+def is_valid_token_format(token: str) -> bool:
+    """Validate standard Telegram Bot Token syntax (<id>:<hash>)."""
+    if not token:
+        return False
+    return bool(re.match(r"^\d{8,11}:[A-Za-z0-9_-]{35}$", token))
+
+
+def verify_telegram_token(token: str) -> Tuple[bool, Optional[str], Optional[str]]:
+    """
+    Directly checks token validity against Telegram getMe API.
+    Returns: (is_valid, bot_username, error_description)
+    """
+    if not token or not is_valid_token_format(token):
+        return False, None, "Invalid token format (<digits>:<35 chars>)"
+    try:
+        url = f"https://api.telegram.org/bot{token}/getMe"
+        resp = requests.get(url, timeout=6)
+        if resp.status_code == 200:
+            payload = resp.json()
+            if payload.get("ok"):
+                username = payload.get("result", {}).get("username", "TelegramBot")
+                return True, username, None
+        return False, None, f"HTTP {resp.status_code} Unauthorized"
+    except Exception as exc:
+        return False, None, f"Network check failed: {exc}"
+
+
+def save_token_to_env(token: str, env_path: Path) -> None:
+    """Safely updates or inserts TELEGRAM_BOT_TOKEN into the .env file."""
+    lines = []
+    found = False
+    if env_path.exists():
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith("TELEGRAM_BOT_TOKEN=") or stripped.startswith("BOT_TOKEN="):
+                    lines.append(f"TELEGRAM_BOT_TOKEN={token}\n")
+                    found = True
+                else:
+                    lines.append(line)
+    if not found:
+        lines.append(f"\nTELEGRAM_BOT_TOKEN={token}\n")
+
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+
+def resolve_bot_token() -> str:
+    """
+    Resolves, tests, and interactively prompts for a working Telegram Bot Token.
+    Eliminates crashes due to empty or 401 Unauthorized tokens.
+    """
+    token = (
+        os.getenv("TELEGRAM_BOT_TOKEN")
+        or os.getenv("BOT_TOKEN")
+        or ""
+    ).strip().strip('"').strip("'")
+
+    # In non-interactive environments (unit tests or headless), return whatever is set
+    if "unittest" in sys.modules or not (sys.stdin and sys.stdin.isatty()):
+        return token
+
+    if token:
+        valid, username, err = verify_telegram_token(token)
+        if valid:
+            logger.info(f"Telegram Bot Token verified! Connected as @{username}")
+            return token
+        else:
+            logger.warning(f"Configured token '{mask_token(token)}' failed validation: {err}")
+
+    # Interactive prompt for user in terminal
+    print("\n" + "=" * 72)
+    print(" [!] TELEGRAM BOT TOKEN REQUIRED / टेलीग्राम बॉट टोकन आवश्यक है")
+    print("=" * 72)
+    print(" .env file mein diya gaya token invalid ya unauthorized hai (HTTP 401).")
+    print(" The bot cannot start without a valid token from @BotFather.")
+    print("")
+    print(" Steps to get your token:")
+    print(" 1. Open Telegram and search for @BotFather")
+    print(" 2. Send /mybots, select your bot, and tap 'API Token'")
+    print("    (or send /newbot to create a new bot)")
+    print(" 3. Copy the token and paste it below.")
+    print("=" * 72)
+
+    while True:
+        try:
+            entered = input("\nEnter Telegram Bot Token: ").strip().strip('"').strip("'")
+        except (EOFError, KeyboardInterrupt):
+            print("\nOperation cancelled by user.")
+            sys.exit(0)
+
+        if not entered:
+            print("Token cannot be empty. Please enter a valid token.")
+            continue
+
+        valid, username, err = verify_telegram_token(entered)
+        if valid:
+            print(f"[*] Token verified successfully! Connected as @{username}")
+            try:
+                save_token_to_env(entered, ENV_FILE)
+                print(f"[*] Token saved to {ENV_FILE}")
+            except Exception as save_err:
+                logger.warning(f"Could not persist token to .env: {save_err}")
+            return entered
+        else:
+            print(f"[-] Token rejected by Telegram ({err}). Please re-copy from @BotFather and try again.")
+
+
 # Bot API Configuration (stripped of trailing spaces, carriage returns, or quotes)
 RAW_BOT_TOKEN = (
     os.getenv("TELEGRAM_BOT_TOKEN")
     or os.getenv("BOT_TOKEN")
     or ""
 ).strip().strip('"').strip("'")
-BOT_TOKEN = RAW_BOT_TOKEN
+BOT_TOKEN = resolve_bot_token()
 
 # Temporary storage directory path (configurable via .env, defaults to temp_storage)
 env_temp_dir = os.getenv("TEMP_STORAGE_DIR", "temp_storage").strip().strip('"').strip("'")
@@ -67,21 +198,48 @@ MAX_CHUNK_CHARS = 3500
 TELEGRAM_MAX_MESSAGE_LENGTH = 4000
 
 
-def mask_token(token: str) -> str:
-    """Safely mask token for logs or user display without leaking secrets."""
-    if not token:
-        return "<EMPTY>"
-    parts = token.split(":")
-    if len(parts) == 2:
-        return f"{parts[0]}:{'*' * 8}..."
-    return f"{token[:4]}...{'*' * 8}"
+# ---------------------------------------------------------------------------
+# Cloud Deployment (Render/Railway) Dummy Health Check Server
+# ---------------------------------------------------------------------------
+class HealthCheckHandler(http.server.SimpleHTTPRequestHandler):
+    """Responds with 200 OK to satisfy Render/Railway Web Service health checks."""
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Telegram Bot is healthy and polling.\n")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        # Silence access logs to keep terminal and bot logs clean
+        pass
 
 
-def is_valid_token_format(token: str) -> bool:
-    """Validate standard Telegram Bot Token syntax (<id>:<hash>)."""
-    if not token:
-        return False
-    return bool(re.match(r"^\d{8,11}:[A-Za-z0-9_-]{35}$", token))
+def start_health_server():
+    """Starts a background HTTP health server if PORT environment variable is present."""
+    port_str = os.getenv("PORT")
+    if not port_str:
+        return
+
+    try:
+        port = int(port_str)
+    except ValueError:
+        port = 8080
+
+    def run_server():
+        try:
+            server = http.server.ThreadingHTTPServer(("0.0.0.0", port), HealthCheckHandler)
+            logger.info(f"Cloud health check HTTP server listening on port {port}")
+            server.serve_forever()
+        except Exception as e:
+            logger.warning(f"Could not start cloud health server on port {port}: {e}")
+
+    server_thread = threading.Thread(target=run_server, daemon=True, name="HealthCheckServer")
+    server_thread.start()
+
 
 
 # ---------------------------------------------------------------------------

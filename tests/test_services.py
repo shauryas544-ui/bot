@@ -1,7 +1,7 @@
 import os
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 import docx
 import ebooklib
 from ebooklib import epub
@@ -23,11 +23,17 @@ from config import (
 from services.translator import (
     split_text_into_chunks,
     translate_text,
+    translate_batch,
     translate_txt,
     translate_docx,
     translate_epub,
     translate_pdf,
     translate_file,
+    _sanitize_epub_book,
+    make_progress_bar,
+    escape_markdown,
+    format_progress_message,
+    ProgressTracker,
 )
 from services.splitter import (
     split_txt,
@@ -130,7 +136,14 @@ class TestConfigAndSession(unittest.TestCase):
         self.assertTrue(found_checked)
 
 
-@patch("services.translator._translate_single_chunk", side_effect=lambda text, target_lang, **kw: f"[{target_lang}] {text}")
+def _mock_translate_chunk(text, target_lang="en", **kw):
+    if "⟦§⟧" in text:
+        parts = text.split("⟦§⟧")
+        return " ⟦§⟧ ".join(f"[{target_lang}] {p.strip()}" for p in parts)
+    return f"[{target_lang}] {text}"
+
+
+@patch("services.translator._translate_single_chunk", side_effect=_mock_translate_chunk)
 class TestTranslatorService(unittest.TestCase):
     def test_chunking_small_and_large(self, mock_translate):
         small = "Hello world! This is a simple sentence."
@@ -352,6 +365,215 @@ class TestSplitterService(unittest.TestCase):
             for p in parts:
                 if os.path.exists(p):
                     os.remove(p)
+
+    def test_token_helpers(self):
+        from config import mask_token, is_valid_token_format, verify_telegram_token, save_token_to_env
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        # Mask token
+        self.assertEqual(mask_token(""), "<EMPTY>")
+        self.assertTrue(mask_token("12345678:ABCDEFGHIJKLMN").startswith("12345678:********"))
+
+        # Valid format
+        self.assertTrue(is_valid_token_format("1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789"))
+        self.assertFalse(is_valid_token_format("invalid_token"))
+        self.assertFalse(is_valid_token_format(""))
+
+        # Verify telegram token mock 200
+        with patch("requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {"ok": True, "result": {"username": "TestBot"}}
+            mock_get.return_value = mock_resp
+            valid, username, err = verify_telegram_token("1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789")
+            self.assertTrue(valid)
+            self.assertEqual(username, "TestBot")
+
+        # Verify telegram token mock 401
+        with patch("requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 401
+            mock_get.return_value = mock_resp
+            valid, username, err = verify_telegram_token("1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789")
+            self.assertFalse(valid)
+            self.assertIn("401", err)
+
+        # Save token to env
+        test_env_path = Path(TEMP_DIR) / "test_env_output.env"
+        try:
+            save_token_to_env("99999999:TEST_SAVED_TOKEN_ABCD123456789012", test_env_path)
+            content = test_env_path.read_text(encoding="utf-8")
+            self.assertIn("TELEGRAM_BOT_TOKEN=99999999:TEST_SAVED_TOKEN_ABCD123456789012", content)
+        finally:
+            if test_env_path.exists():
+                test_env_path.unlink()
+
+
+class TestProgressTracking(unittest.TestCase):
+    def test_make_progress_bar(self):
+        bar_0 = make_progress_bar(0)
+        self.assertEqual(bar_0, "░" * 10)
+
+        bar_50 = make_progress_bar(50)
+        self.assertEqual(bar_50, "▓" * 5 + "░" * 5)
+
+        bar_100 = make_progress_bar(100)
+        self.assertEqual(bar_100, "▓" * 10)
+
+        # Clamping
+        bar_neg = make_progress_bar(-10)
+        self.assertEqual(bar_neg, "░" * 10)
+        bar_over = make_progress_bar(150)
+        self.assertEqual(bar_over, "▓" * 10)
+
+    def test_escape_markdown(self):
+        dirty = "Chapter_1 [Test]*bold* `code` (note)"
+        clean = escape_markdown(dirty)
+        for ch in ("*", "_", "`", "[", "]", "(", ")"):
+            self.assertNotIn(ch, clean)
+
+    def test_format_progress_message(self):
+        msg = format_progress_message("Fortunately_I_Met_You.epub", "Hindi 🇮🇳", 50, "Chapter 6 of 12")
+        self.assertIn("Fortunately_I_Met_You.epub", msg)
+        self.assertIn("Hindi 🇮🇳", msg)
+        self.assertIn("50%", msg)
+        self.assertIn("Chapter 6 of 12", msg)
+        self.assertIn("▓▓▓▓▓░░░░░", msg)
+
+    def test_progress_tracker_throttling(self):
+        bot_mock = MagicMock()
+        loop_mock = MagicMock()
+        loop_mock.is_closed.return_value = False
+
+        tracker = ProgressTracker(
+            bot=bot_mock,
+            chat_id=12345,
+            message_id=67890,
+            filename="sample.epub",
+            lang_name="Hindi 🇮🇳",
+            loop=loop_mock,
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_dispatch:
+            mock_dispatch.side_effect = lambda coro, loop: coro.close()
+            # First update triggers
+            tracker.update(5, "Discovered chapters")
+            self.assertEqual(mock_dispatch.call_count, 1)
+
+            # Rapid duplicate update within 2.0s without significant change is throttled
+            tracker.update(6, "Discovered chapters")
+            self.assertEqual(mock_dispatch.call_count, 1)
+
+            # Completion (100%) always triggers immediately
+            tracker.update(100, "Completed!")
+            self.assertEqual(mock_dispatch.call_count, 2)
+
+    @patch("services.translator._translate_single_chunk", side_effect=_mock_translate_chunk)
+    def test_epub_with_progress_callback(self, mock_translate):
+        input_file = os.path.join(TEMP_DIR, "sample_prog.epub")
+        output_file = os.path.join(TEMP_DIR, "sample_prog_out.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("prog-test")
+        book.set_title("Progress Book")
+        book.set_language("en")
+
+        c1 = epub.EpubHtml(title="Chapter 1", file_name="c1.xhtml", lang="en")
+        c1.content = "<html><body><h1>Title 1</h1><p>Paragraph one.</p></body></html>"
+        c2 = epub.EpubHtml(title="Chapter 2", file_name="c2.xhtml", lang="en")
+        c2.content = "<html><body><h1>Title 2</h1><p>Paragraph two.</p></body></html>"
+        book.add_item(c1)
+        book.add_item(c2)
+        book.spine = ["nav", c1, c2]
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        epub.write_epub(input_file, book)
+
+        progress_calls = []
+        def callback(pct, detail):
+            progress_calls.append((pct, detail))
+
+        try:
+            res = translate_epub(input_file, output_file, "hi", progress_callback=callback)
+            self.assertTrue(os.path.exists(res))
+            self.assertTrue(len(progress_calls) > 0)
+            # Verify final call is 100%
+            self.assertEqual(progress_calls[-1][0], 100)
+            # Verify some chapter detail was recorded
+            has_chapter_detail = any("Chapter" in call[1] or "section" in call[1].lower() for call in progress_calls)
+            self.assertTrue(has_chapter_detail)
+        finally:
+            if os.path.exists(input_file):
+                os.remove(input_file)
+            if os.path.exists(output_file):
+                os.remove(output_file)
+
+    def test_sanitize_epub_book_none_attributes(self):
+        """
+        Tests that _sanitize_epub_book fixes NoneType attributes in metadata,
+        items, links, and metas, preventing 'TypeError: Argument must be bytes or unicode, got NoneType'.
+        """
+        book = epub.EpubBook()
+        book.IDENTIFIER_ID = None
+        book.uid = None
+        book.title = None
+
+        # Add dirty metadata with None values and None attributes
+        dc_ns = "http://purl.org/dc/elements/1.1/"
+        book.metadata[dc_ns] = {
+            "title": [(None, {"scheme": None, "id": None})],
+            "creator": [(None, {"role": None})],
+            "language": [(None, {})],
+        }
+
+        # Add item with None attributes
+        item = epub.EpubHtml(title=None, file_name=None, lang=None)
+        item.id = None
+        item.media_type = None
+        item.links = [{"rel": None, "href": None}]
+        item.metas = [{"name": None, "content": None}]
+        item.properties = [None]
+        item.content = "<html><body><p>Cleaned</p></body></html>"
+        book.add_item(item)
+        book.spine = ["nav", item]
+
+        # Add Link with uid=None into book.toc (the exact pattern produced by ebooklib's nav parser)
+        book.toc = [epub.Link("item_1.xhtml", "Chapter 1", uid=None)]
+        book.add_item(epub.EpubNcx())
+
+        # Sanitize
+        _sanitize_epub_book(book, target_lang="hi")
+
+        self.assertIsNotNone(book.IDENTIFIER_ID)
+        self.assertIsNotNone(book.uid)
+        self.assertEqual(book.language, "hi")
+
+        # Verify that write_epub succeeds without raising TypeError
+        test_out = os.path.join(TEMP_DIR, "sanitized_test_out.epub")
+        try:
+            epub.write_epub(test_out, book)
+            self.assertTrue(os.path.exists(test_out))
+        finally:
+            if os.path.exists(test_out):
+                os.remove(test_out)
+
+    @patch("services.translator._translate_single_chunk", side_effect=_mock_translate_chunk)
+    def test_translate_batch(self, mock_translate):
+        """
+        Tests translate_batch with multiple inputs and ensures progress callback is called.
+        """
+        inputs = ["Hello world", "How are you doing?", "Telegram bot translation system"]
+        batch_calls = []
+
+        def on_batch(cur, tot):
+            batch_calls.append((cur, tot))
+
+        results = translate_batch(inputs, target_lang="es", progress_batch_callback=on_batch)
+        self.assertEqual(len(results), 3)
+        for r in results:
+            self.assertIn("[es]", r)
+        self.assertGreater(len(batch_calls), 0)
 
 
 if __name__ == "__main__":

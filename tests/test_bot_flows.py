@@ -225,6 +225,65 @@ class TestBotFlows(unittest.IsolatedAsyncioTestCase):
             if os.path.exists(test_file):
                 os.remove(test_file)
 
+    async def test_translate_callback_flow(self):
+        test_txt = os.path.join(TEMP_DIR, "flow_trans_test.txt")
+        with open(test_txt, "w", encoding="utf-8") as f:
+            f.write("Hello world test translation")
+        set_active_file(self.user_id, test_txt, "flow_trans_test.txt", ".txt")
+
+        cb_update = MagicMock()
+        cb_update.effective_user.id = self.user_id
+        cb_update.effective_chat.id = self.user_id
+        cb_update.callback_query.data = "action_translate"
+        cb_update.callback_query.answer = AsyncMock()
+        status_mock = MagicMock()
+        status_mock.delete = AsyncMock()
+        cb_update.effective_chat.send_message = AsyncMock(return_value=status_mock)
+        cb_update.effective_chat.send_document = AsyncMock()
+        context = MagicMock()
+
+        with patch("handlers.callbacks.translate_file") as mock_trans:
+            out_file = os.path.join(TEMP_DIR, "translated_dummy.txt")
+            with open(out_file, "w", encoding="utf-8") as f:
+                f.write("नमस्ते दुनिया")
+            mock_trans.return_value = out_file
+
+            await callback_query_handler(cb_update, context)
+
+            cb_update.callback_query.answer.assert_awaited_once()
+            cb_update.effective_chat.send_document.assert_awaited_once()
+            self.assertFalse(os.path.exists(out_file))  # Cleaned up
+
+    async def test_translate_callback_flow_bot_py(self):
+        import bot
+        test_txt = os.path.join(TEMP_DIR, "bot_trans_test.txt")
+        with open(test_txt, "w", encoding="utf-8") as f:
+            f.write("Hello world test translation bot py")
+        bot.set_active_file(self.user_id, test_txt, "bot_trans_test.txt", ".txt")
+
+        cb_update = MagicMock()
+        cb_update.effective_user.id = self.user_id
+        cb_update.effective_chat.id = self.user_id
+        cb_update.callback_query.data = "action_translate"
+        cb_update.callback_query.answer = AsyncMock()
+        status_mock = MagicMock()
+        status_mock.delete = AsyncMock()
+        cb_update.effective_chat.send_message = AsyncMock(return_value=status_mock)
+        cb_update.effective_chat.send_document = AsyncMock()
+        context = MagicMock()
+
+        with patch("bot.translate_file") as mock_trans:
+            out_file = os.path.join(TEMP_DIR, "translated_dummy_bot.txt")
+            with open(out_file, "w", encoding="utf-8") as f:
+                f.write("नमस्ते दुनिया")
+            mock_trans.return_value = out_file
+
+            await bot.callback_query_handler(cb_update, context)
+
+            cb_update.callback_query.answer.assert_awaited_once()
+            cb_update.effective_chat.send_document.assert_awaited_once()
+            self.assertFalse(os.path.exists(out_file))
+
 
 if __name__ == "__main__":
     unittest.main()

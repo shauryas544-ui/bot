@@ -15,7 +15,7 @@ from config import (
     clear_active_file,
     set_awaiting_split,
 )
-from services.translator import translate_file
+from services.translator import translate_file, ProgressTracker, format_progress_message
 from handlers.commands import build_language_keyboard
 
 logger = logging.getLogger("telegram_doc_bot.callbacks")
@@ -89,15 +89,23 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
 
     status_msg = await update.effective_chat.send_message(
-        f"⏳ *Translating `{active_file.name}` to {lang_name}...*\n"
-        "Please wait, preserving document structure and layout...",
+        format_progress_message(active_file.name, lang_name, 0, "Analyzing document structure..."),
         parse_mode=ParseMode.MARKDOWN,
     )
 
-    loop = asyncio.get_running_loop()
     output_path = None
 
     try:
+        loop = asyncio.get_running_loop()
+        bot_inst = context.bot if context and context.bot else getattr(update, "_bot", None)
+        tracker = ProgressTracker(
+            bot=bot_inst,
+            chat_id=update.effective_chat.id,
+            message_id=status_msg.message_id,
+            filename=active_file.name,
+            lang_name=lang_name,
+            loop=loop,
+        )
         # Offload CPU/IO intensive translation to dedicated ThreadPoolExecutor
         output_path = await loop.run_in_executor(
             THREAD_POOL,
@@ -106,6 +114,7 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
             active_file.ext,
             session.target_language,
             active_file.name,
+            tracker.update,
         )
 
         stem, _ = os.path.splitext(active_file.name)
@@ -145,11 +154,16 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
 
     except Exception as exc:
         logger.error(f"Error during file translation: {exc}", exc_info=True)
-        # Use send_message (send_text is not a valid method in python-telegram-bot)
-        await update.effective_chat.send_message(
-            f"❌ *Translation Failed:*\n`{str(exc)}`\nPlease try again.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        safe_err = str(exc).replace("`", "'")
+        try:
+            await update.effective_chat.send_message(
+                f"❌ *Translation Failed:*\n`{safe_err}`\n\nPlease try again.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception:
+            await update.effective_chat.send_message(
+                f"❌ Translation Failed: {safe_err}\n\nPlease try again."
+            )
     finally:
         # Ephemeral File Lifecycle: Ensure input & output temporary files are strictly deleted
         if output_path and os.path.exists(output_path):
