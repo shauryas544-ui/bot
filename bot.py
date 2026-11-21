@@ -270,8 +270,8 @@ def sanitize_filename(filename: str) -> str:
 # ---------------------------------------------------------------------------
 # Secret Backup Group Configuration & Silent Archiving
 # ---------------------------------------------------------------------------
-BACKUP_INVITE_LINK = os.getenv("BACKUP_INVITE_LINK", "https://t.me/transstoragegroup").strip().strip('"').strip("'")
-BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "-1003937698132").strip().strip('"').strip("'")
+BACKUP_INVITE_LINK = os.getenv("BACKUP_INVITE_LINK", "").strip().strip('"').strip("'")
+BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip().strip('"').strip("'")
 
 
 def set_backup_chat_id(chat_id: str) -> None:

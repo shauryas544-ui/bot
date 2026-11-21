@@ -120,16 +120,15 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def set_backup_group_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    /set_backup_group: Admin command to register current group as backup group.
+    /set_backup_group: Silent admin command to register current group as backup group.
     """
     chat = update.effective_chat
     if not chat or chat.type not in ["group", "supergroup"]:
-        if update.message:
-            await update.message.reply_text("This command must be run inside the target backup group.")
         return
     save_backup_chat_id_to_env(str(chat.id))
     try:
-        await update.message.delete()
+        if update.message:
+            await update.message.delete()
     except Exception:
         pass
 
