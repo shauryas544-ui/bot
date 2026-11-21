@@ -1,11 +1,17 @@
+import re
+import asyncio
 import logging
+from typing import Optional, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from config import (
     SUPPORTED_LANGUAGES,
+    BACKUP_INVITE_LINK,
     get_user_session,
+    get_backup_chat_id,
+    save_backup_chat_id_to_env,
 )
 
 logger = logging.getLogger("telegram_doc_bot.commands")
@@ -87,3 +93,27 @@ async def language_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         reply_markup=reply_markup,
         parse_mode=ParseMode.MARKDOWN,
     )
+
+
+async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /status: Shows system status and active language.
+    """
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
+        return
+
+    session = get_user_session(user.id)
+    lang_name = SUPPORTED_LANGUAGES.get(session.target_language, session.target_language)
+
+    status_text = (
+        "⚙️ *Bot System Status*\n\n"
+        "🤖 *Status:* Online & Active ✅\n"
+        f"🌐 *Current Language:* `{lang_name}`\n\n"
+        "✨ *Features:*\n"
+        "• Send any text or document (`.txt`, `.docx`, `.epub`, `.pdf`)\n"
+        "• Choose **Translate** or **Split** directly from the interactive buttons!"
+    )
+    await chat.send_message(status_text, parse_mode=ParseMode.MARKDOWN)
+

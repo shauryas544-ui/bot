@@ -8,6 +8,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 from telegram import Update
+from telegram.constants import ParseMode
 from telegram.error import (
     InvalidToken,
     NetworkError,
@@ -22,6 +23,8 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    ChatMemberHandler,
+    TypeHandler,
     ContextTypes,
     filters,
 )
@@ -35,7 +38,11 @@ from config import (
     start_health_server,
     verify_telegram_token,
 )
-from handlers.commands import start_handler, language_handler
+from handlers.commands import (
+    start_handler,
+    language_handler,
+    status_handler,
+)
 from handlers.callbacks import callback_query_handler
 from handlers.files import (
     document_upload_handler,
@@ -134,11 +141,12 @@ def create_application():
     # 1. Command Handlers
     application.add_handler(CommandHandler("start", start_handler))
     application.add_handler(CommandHandler("language", language_handler))
+    application.add_handler(CommandHandler("status", status_handler))
 
     # 2. Inline Keyboard Callback Queries
     application.add_handler(CallbackQueryHandler(callback_query_handler))
 
-    # 3. File / Document Handler (.txt, .docx, .epub)
+    # 3. File / Document Handler (.txt, .docx, .epub, .pdf)
     application.add_handler(MessageHandler(filters.Document.ALL, document_upload_handler))
 
     # 4. Non-Document Media Handler (Photos, Videos, Audio, Voice, Stickers)
@@ -212,7 +220,7 @@ def main() -> None:
     logger.info("Starting bot polling loop...")
 
     try:
-        app.run_polling(drop_pending_updates=False)
+        app.run_polling(drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
     except InvalidToken:
         print(
             "\n" + "=" * 70 + "\n"

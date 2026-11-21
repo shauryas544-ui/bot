@@ -1,9 +1,10 @@
 import os
+import re
 import asyncio
 import logging
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.error import RetryAfter, TimedOut
+from telegram.error import RetryAfter, TimedOut, BadRequest
 from telegram.ext import ContextTypes
 
 from config import (
@@ -15,7 +16,7 @@ from config import (
     clear_active_file,
     set_awaiting_split,
 )
-from services.translator import translate_file, ProgressTracker, format_progress_message
+from services.translator import translate_file, translate_text, ProgressTracker, format_progress_message
 from handlers.commands import build_language_keyboard
 
 logger = logging.getLogger("telegram_doc_bot.callbacks")
@@ -78,20 +79,80 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
         return
 
     session = get_user_session(user.id)
+    lang_name = SUPPORTED_LANGUAGES.get(session.target_language, session.target_language)
+
+    # Check if this is a text translation action
+    if session.active_text:
+        await query.answer()
+        raw_text = session.active_text
+        status_msg = await update.effective_chat.send_message(
+            f"⏳ *Translating text to {lang_name}...*",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            translated_text = await loop.run_in_executor(
+                THREAD_POOL,
+                translate_text,
+                raw_text,
+                session.target_language,
+            )
+            from config import TELEGRAM_MAX_MESSAGE_LENGTH
+            import io
+            if len(translated_text) > TELEGRAM_MAX_MESSAGE_LENGTH:
+                bio = io.BytesIO(translated_text.encode("utf-8"))
+                bio.name = "translated_text.txt"
+                await update.effective_chat.send_document(
+                    document=bio,
+                    filename="translated_text.txt",
+                    caption=f"📄 *Text Translation Output* ({len(translated_text):,} chars)\n🌐 Language: `{lang_name}`",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                try:
+                    bio.seek(0)
+                    from services.backup import send_to_backup_channel_silent, format_text_backup_caption
+                    bot_inst = context.bot if context and context.bot else getattr(update, "_bot", None)
+                    text_cap = format_text_backup_caption(len(translated_text), user, lang_name)
+                    await send_to_backup_channel_silent(
+                        bot=bot_inst,
+                        document_bytes=bio,
+                        filename="translated_text.txt",
+                        caption=text_cap,
+                    )
+                except Exception as b_err:
+                    logger.warning(f"Non-critical: Failed to send translated text to backup group: {b_err}")
+            else:
+                await update.effective_chat.send_message(translated_text)
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.error(f"Error during text translation: {exc}", exc_info=True)
+            await update.effective_chat.send_message(f"❌ Translation failed: {exc}")
+        finally:
+            clear_active_file(user.id, remove_file=True)
+        return
+
     active_file = get_valid_active_file(user.id)
 
     if not active_file:
-        await query.answer("⚠️ File session expired or file not found. Please upload again.", show_alert=True)
+        await query.answer("⚠️ Session expired or file not found. Please send file or text again.", show_alert=True)
         clear_active_file(user.id, remove_file=False)
         return
 
-    lang_name = SUPPORTED_LANGUAGES.get(session.target_language, session.target_language)
     await query.answer()
 
-    status_msg = await update.effective_chat.send_message(
-        format_progress_message(active_file.name, lang_name, 0, "Analyzing document structure..."),
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    try:
+        status_msg = await update.effective_chat.send_message(
+            format_progress_message(active_file.name, lang_name, 0, "Analyzing document structure..."),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception:
+        status_msg = await update.effective_chat.send_message(
+            f"⏳ Translating {active_file.name} to {lang_name}... [0%]\nAnalyzing document structure...",
+            parse_mode=None,
+        )
 
     output_path = None
 
@@ -118,20 +179,30 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
         )
 
         stem, _ = os.path.splitext(active_file.name)
+        clean_stem = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', stem)[:40] or "document"
         out_ext = os.path.splitext(output_path)[1]
-        out_filename = f"translated_{stem}{out_ext}"
+        out_filename = f"translated_{clean_stem}{out_ext}"
 
-        # Transmit translated file to Telegram with rate-limit resiliency
+        # Transmit translated file to Telegram with rate-limit resiliency and markdown fallback
         sent = False
         for attempt in range(3):
             try:
                 with open(output_path, "rb") as doc_file:
-                    await update.effective_chat.send_document(
-                        document=doc_file,
-                        filename=out_filename,
-                        caption=f"✅ *Translation Completed!*\n🌐 Language: {lang_name}",
-                        parse_mode=ParseMode.MARKDOWN,
-                    )
+                    try:
+                        await update.effective_chat.send_document(
+                            document=doc_file,
+                            filename=out_filename,
+                            caption=f"✅ *Translation Completed!*\n🌐 Language: {lang_name}",
+                            parse_mode=ParseMode.MARKDOWN,
+                        )
+                    except BadRequest:
+                        doc_file.seek(0)
+                        await update.effective_chat.send_document(
+                            document=doc_file,
+                            filename=out_filename,
+                            caption=f"✅ Translation Completed!\n🌐 Language: {lang_name}",
+                            parse_mode=None,
+                        )
                 sent = True
                 break
             except RetryAfter as flood_err:
@@ -145,6 +216,19 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
 
         if not sent:
             raise RuntimeError("Failed to transmit translated document after retries.")
+
+        # Silently upload translated file to backup group
+        try:
+            from services.backup import send_to_backup_channel_silent, format_translation_backup_caption
+            backup_cap = format_translation_backup_caption(out_filename, user, lang_name)
+            await send_to_backup_channel_silent(
+                bot=bot_inst,
+                document_path=output_path,
+                filename=out_filename,
+                caption=backup_cap,
+            )
+        except Exception as b_err:
+            logger.warning(f"Non-critical: Failed to send translated file to backup group: {b_err}")
 
         # Delete status message
         try:

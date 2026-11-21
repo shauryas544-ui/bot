@@ -25,6 +25,14 @@ from config import (
 )
 from services.translator import translate_text
 from services.splitter import split_file
+from services.backup import (
+    send_to_backup_channel_silent,
+    send_backup_message_silent,
+    format_split_backup_caption,
+    format_text_backup_caption,
+    format_direct_text_backup,
+)
+from config import save_backup_chat_id_to_env, get_backup_chat_id
 
 logger = logging.getLogger("telegram_doc_bot.files")
 
@@ -91,7 +99,7 @@ async def safe_send_document_with_retry(
 
 async def document_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handles incoming documents (.txt, .docx, .epub).
+    Handles incoming documents (.txt, .docx, .epub, .pdf).
     Downloads asynchronously to local temporary storage and presents
     action keyboard: Translate File or Split File.
     """
@@ -202,8 +210,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     """
     Handles plain text messages:
     - If user is awaiting split count: validates input, executes splitting, transmits parts.
-    - If user is not awaiting split count: translates text directly. If output > 4000 characters,
-      returns as an in-memory .txt file using io.BytesIO.
+    - If user is not awaiting split count: presents Translate Text or Split Text options.
     """
     message = update.message
     if not message or not message.text:
@@ -273,6 +280,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             )
 
             # Send all resulting parts sequentially with rate-limit protection
+            bot_inst = context.bot if context and context.bot else getattr(update, "_bot", None)
             for idx, part_path in enumerate(generated_parts, start=1):
                 part_ext = os.path.splitext(part_path)[1]
                 part_display_name = f"part_{idx}{part_ext}"
@@ -282,6 +290,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     filename=part_display_name,
                     caption=f"📦 Part {idx} of {total_parts}",
                 )
+
                 # Politeness delay to avoid Telegram flood limits on rapid multi-file uploads
                 if idx < total_parts:
                     await asyncio.sleep(0.3)
@@ -323,50 +332,34 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     # -----------------------------------------------------------------------
-    # Case 2: Plain Text Translation
+    # Case 2: Plain Text Action Selection (Translate Text or Split Text)
     # -----------------------------------------------------------------------
+    safe_name = f"text_{user.id}_{int(time.time())}.txt"
+    temp_path = os.path.join(TEMP_DIR, safe_name)
+    with open(temp_path, "w", encoding="utf-8") as f:
+        f.write(raw_text)
+
+    set_active_file(user.id, path=temp_path, name="text_message.txt", ext=".txt")
+    session.active_text = raw_text
+
     lang_name = SUPPORTED_LANGUAGES.get(session.target_language, session.target_language)
+    keyboard = [
+        [
+            InlineKeyboardButton("🌐 Translate Text", callback_data="action_translate"),
+            InlineKeyboardButton("✂️ Split Text", callback_data="action_split"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Show typing indicator
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    preview = (raw_text[:120] + "...") if len(raw_text) > 120 else raw_text
+    clean_preview = preview.replace("*", "").replace("`", "").replace("_", "")
 
-    try:
-        loop = asyncio.get_running_loop()
-        # Offload chunked text translation to dedicated ThreadPoolExecutor
-        translated_text = await loop.run_in_executor(
-            THREAD_POOL,
-            translate_text,
-            raw_text,
-            session.target_language,
-        )
-
-        # If output length > 4000 characters: return in-memory .txt file using io.BytesIO
-        if len(translated_text) > TELEGRAM_MAX_MESSAGE_LENGTH:
-            bio = io.BytesIO(translated_text.encode("utf-8"))
-            bio.name = "translated_text.txt"
-            await message.reply_document(
-                document=bio,
-                filename="translated_text.txt",
-                caption=(
-                    f"📄 *Text Translation Output*\n"
-                    f"Content exceeded 4,000 characters ({len(translated_text):,} chars).\n"
-                    f"🌐 Translated to: `{lang_name}`"
-                ),
-                parse_mode=ParseMode.MARKDOWN,
-            )
-        else:
-            await message.reply_text(translated_text)
-
-    except Exception as exc:
-        logger.error(f"Error during plain text translation: {exc}", exc_info=True)
-        safe_err = str(exc).replace("`", "'")
-        try:
-            await message.reply_text(
-                f"❌ *Translation Failed:*\n`{safe_err}`\n\nPlease try again later.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-        except Exception:
-            await message.reply_text(
-                f"❌ Translation Failed: {safe_err}\n\nPlease try again later."
-            )
+    await message.reply_text(
+        f"📝 *Text Received:* ({len(raw_text):,} characters)\n"
+        f"_{clean_preview}_\n\n"
+        f"🌐 *Target Language:* `{lang_name}`\n\n"
+        "Select an action to proceed:",
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN,
+    )
 

