@@ -27,7 +27,7 @@ import http.server
 from pathlib import Path
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional, Tuple, Any, Callable
+from typing import Dict, List, Optional, Tuple, Any, Callable, Union
 
 import requests
 import urllib.parse
@@ -312,14 +312,87 @@ async def send_to_backup_channel_silent(
     document_bytes: Optional[Any] = None,
     filename: str = "document",
     caption: str = "",
+    file_id: Optional[str] = None,
+    from_chat_id: Optional[Union[int, str]] = None,
+    message_id: Optional[int] = None,
 ) -> bool:
-    """Silently sends a translated file to the backup group."""
+    """
+    Silently archives a translated file/message to the backup group.
+    Uses Telegram file_id / copy_message first (zero bandwidth, instant, 100% reliable),
+    falling back to direct upload if needed.
+    """
     if not bot:
         return False
     chat_id = get_backup_chat_id()
     if not chat_id:
         return False
 
+    # 1. Primary Strategy: Send via Telegram file_id (Instant, no re-upload bandwidth, no timeouts)
+    if file_id and hasattr(bot, "send_document"):
+        for attempt in range(1, 4):
+            try:
+                try:
+                    res = bot.send_document(
+                        chat_id=chat_id,
+                        document=file_id,
+                        caption=caption,
+                        parse_mode=ParseMode.MARKDOWN,
+                        read_timeout=60,
+                        write_timeout=60,
+                    )
+                    if asyncio.iscoroutine(res):
+                        await res
+                except BadRequest:
+                    clean_caption = caption.replace("*", "").replace("`", "").replace("_", "")
+                    res = bot.send_document(
+                        chat_id=chat_id,
+                        document=file_id,
+                        caption=clean_caption,
+                        parse_mode=None,
+                        read_timeout=60,
+                        write_timeout=60,
+                    )
+                    if asyncio.iscoroutine(res):
+                        await res
+                logger.info(f"Successfully archived '{filename}' (via file_id) to backup group ({chat_id}).")
+                return True
+            except RetryAfter as e:
+                logger.warning(f"Backup group FloodControl: Sleeping {e.retry_after}s (attempt {attempt}/3)")
+                await asyncio.sleep(e.retry_after + 1)
+            except Exception as e:
+                logger.warning(f"Attempt {attempt}/3 archiving via file_id failed ({e}), retrying...")
+                await asyncio.sleep(1.0)
+
+    # 2. Secondary Strategy: copy_message from source chat
+    if from_chat_id and message_id and hasattr(bot, "copy_message"):
+        try:
+            try:
+                res = bot.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=from_chat_id,
+                    message_id=message_id,
+                    caption=caption,
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                if asyncio.iscoroutine(res):
+                    await res
+            except BadRequest:
+                clean_caption = caption.replace("*", "").replace("`", "").replace("_", "")
+                res = bot.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=from_chat_id,
+                    message_id=message_id,
+                    caption=clean_caption,
+                    parse_mode=None,
+                )
+                if asyncio.iscoroutine(res):
+                    await res
+            logger.info(f"Successfully archived '{filename}' (via copy_message) to backup group ({chat_id}).")
+            return True
+        except Exception as e:
+            logger.warning(f"Archiving via copy_message failed ({e}), falling back to direct upload...")
+
+    # 3. Tertiary Strategy: Direct upload from local path or bytes with automatic retry
     for attempt in range(1, 4):
         try:
             if document_path and os.path.exists(document_path):
@@ -377,18 +450,19 @@ async def send_to_backup_channel_silent(
             else:
                 return False
 
-            logger.info(f"Successfully archived translated file '{filename}' to backup group ({chat_id}).")
+            logger.info(f"Successfully archived translated file '{filename}' to backup group ({chat_id}) via direct upload.")
             return True
 
         except RetryAfter as e:
             logger.warning(f"Backup group FloodControl: Sleeping {e.retry_after}s (attempt {attempt}/3)")
             await asyncio.sleep(e.retry_after + 1)
-        except TimedOut:
-            logger.warning(f"Timeout archiving to backup group (attempt {attempt}/3)")
-            await asyncio.sleep(2)
         except Exception as e:
-            logger.error(f"Error archiving file to backup group {chat_id}: {e}")
-            return False
+            logger.warning(f"Attempt {attempt}/3 archiving file directly to {chat_id} failed: {e}")
+            if attempt < 3:
+                await asyncio.sleep(2.0)
+            else:
+                logger.error(f"Failed to archive file to backup group {chat_id} after {attempt} attempts: {e}")
+                return False
 
     return False
 
@@ -2022,29 +2096,29 @@ async def safe_send_document_with_retry(
     caption: Optional[str] = None,
     parse_mode: Optional[str] = None,
     max_retries: int = 3,
-) -> None:
-    """Transmits a document, automatically handling flood control and timeouts."""
+):
+    """Transmits a document, automatically handling flood control and timeouts. Returns sent Message."""
     for attempt in range(max_retries):
         try:
             with open(document_path, "rb") as doc_file:
-                await chat.send_document(
+                msg = await chat.send_document(
                     document=doc_file,
                     filename=filename,
                     caption=caption,
                     parse_mode=parse_mode,
                 )
-            return
+            return msg
         except BadRequest as b_err:
             if parse_mode:
                 try:
                     with open(document_path, "rb") as doc_file:
-                        await chat.send_document(
+                        msg = await chat.send_document(
                             document=doc_file,
                             filename=filename,
                             caption=caption,
                             parse_mode=None,
                         )
-                    return
+                    return msg
                 except Exception:
                     pass
             logger.error(f"Failed to send document: {b_err}")
@@ -2057,6 +2131,12 @@ async def safe_send_document_with_retry(
             if attempt == max_retries - 1:
                 raise
             await asyncio.sleep(1.0)
+        except Exception as exc:
+            if attempt == max_retries - 1:
+                raise
+            logger.warning(f"Error transmitting document (attempt {attempt + 1}/{max_retries}): {exc}")
+            await asyncio.sleep(1.0)
+    return None
 
 
 def build_language_keyboard(current_lang: str) -> InlineKeyboardMarkup:
@@ -2184,7 +2264,7 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
             if len(translated_text) > TELEGRAM_MAX_MESSAGE_LENGTH:
                 bio = io.BytesIO(translated_text.encode("utf-8"))
                 bio.name = "translated_text.txt"
-                await update.effective_chat.send_document(
+                sent_txt = await update.effective_chat.send_document(
                     document=bio,
                     filename="translated_text.txt",
                     caption=f"📄 *Text Translation Output* ({len(translated_text):,} chars)\n🌐 Language: `{lang_name}`",
@@ -2194,16 +2274,28 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
                     bot_inst = context.bot if context and context.bot else getattr(update, "_bot", None)
                     text_cap = format_text_backup_caption(len(translated_text), user, lang_name)
                     bio.seek(0)
+                    file_id = sent_txt.document.file_id if (sent_txt and getattr(sent_txt, "document", None)) else None
+                    msg_id = sent_txt.message_id if sent_txt else None
+                    chat_id_src = update.effective_chat.id if update.effective_chat else None
                     await send_to_backup_channel_silent(
                         bot=bot_inst,
                         document_bytes=bio,
                         filename="translated_text.txt",
                         caption=text_cap,
+                        file_id=file_id,
+                        from_chat_id=chat_id_src,
+                        message_id=msg_id,
                     )
                 except Exception as b_err:
                     logger.warning(f"Non-critical: Failed to archive text translation to backup group: {b_err}")
             else:
                 await update.effective_chat.send_message(translated_text)
+                try:
+                    bot_inst = context.bot if context and context.bot else getattr(update, "_bot", None)
+                    direct_backup_text = format_direct_text_backup(raw_text, translated_text, user, lang_name)
+                    await send_backup_message_silent(bot=bot_inst, text=direct_backup_text)
+                except Exception as b_err:
+                    logger.warning(f"Non-critical: Failed to archive direct text to backup group: {b_err}")
             try:
                 await status_msg.delete()
             except Exception:
@@ -2264,7 +2356,7 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
         out_ext = os.path.splitext(output_path)[1]
         out_filename = f"translated_{clean_stem}{out_ext}"
 
-        await safe_send_document_with_retry(
+        sent_doc = await safe_send_document_with_retry(
             chat=update.effective_chat,
             document_path=output_path,
             filename=out_filename,
@@ -2277,11 +2369,17 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
         try:
             bot_inst = context.bot if context and context.bot else getattr(update, "_bot", None)
             backup_cap = format_translation_backup_caption(out_filename, user, lang_name)
+            file_id = sent_doc.document.file_id if (sent_doc and getattr(sent_doc, "document", None)) else None
+            msg_id = sent_doc.message_id if sent_doc else None
+            chat_id_src = update.effective_chat.id if update.effective_chat else None
             await send_to_backup_channel_silent(
                 bot=bot_inst,
                 document_path=output_path,
                 filename=out_filename,
                 caption=backup_cap,
+                file_id=file_id,
+                from_chat_id=chat_id_src,
+                message_id=msg_id,
             )
         except Exception as b_err:
             logger.warning(f"Non-critical: Failed to archive translated file to group: {b_err}")
@@ -2345,6 +2443,8 @@ async def handle_action_split(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def document_upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_chat and update.effective_chat.type in ["group", "supergroup"]:
+        return
     message = update.message
     if not message or not message.document:
         return
@@ -2436,6 +2536,8 @@ async def unsupported_media_handler(update: Update, context: ContextTypes.DEFAUL
 
 
 async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_chat and update.effective_chat.type in ["group", "supergroup"]:
+        return
     message = update.message
     if not message or not message.text:
         return

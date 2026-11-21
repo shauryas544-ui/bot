@@ -75,43 +75,37 @@ class TestBotFlows(unittest.IsolatedAsyncioTestCase):
         session = get_user_session(self.user_id)
         self.assertEqual(session.target_language, "fr")
 
-    @patch("handlers.files.translate_text", return_value="नमस्ते दुनिया")
-    async def test_plain_text_short_translation(self, mock_translate):
+    async def test_plain_text_short_translation(self):
         update = MagicMock()
         update.effective_user.id = self.user_id
         update.effective_chat.id = 12345
         update.message.text = "Hello world"
         update.message.reply_text = AsyncMock()
         context = MagicMock()
-        context.bot.send_chat_action = AsyncMock()
 
         session = get_user_session(self.user_id)
         session.awaiting_split_count = False
 
         await text_message_handler(update, context)
 
-        update.message.reply_text.assert_awaited_once_with("नमस्ते दुनिया")
+        update.message.reply_text.assert_awaited_once()
+        self.assertEqual(session.active_text, "Hello world")
 
-    @patch("handlers.files.translate_text", return_value="A" * 4500)
-    async def test_plain_text_over_4000_chars(self, mock_translate):
+    async def test_plain_text_interactive_prompt(self):
         update = MagicMock()
         update.effective_user.id = self.user_id
         update.effective_chat.id = 12345
         update.message.text = "Hello world. " * 350
-        update.message.reply_document = AsyncMock()
         update.message.reply_text = AsyncMock()
         context = MagicMock()
-        context.bot.send_chat_action = AsyncMock()
 
         session = get_user_session(self.user_id)
         session.awaiting_split_count = False
 
         await text_message_handler(update, context)
 
-        update.message.reply_document.assert_awaited_once()
-        _, kwargs = update.message.reply_document.call_args
-        self.assertEqual(kwargs["filename"], "translated_text.txt")
-        self.assertIsInstance(kwargs["document"], io.BytesIO)
+        update.message.reply_text.assert_awaited_once()
+        self.assertTrue(len(session.active_text) > 4000)
 
     async def test_split_flow_txt(self):
         test_txt = os.path.join(TEMP_DIR, "bot_flow_test.txt")

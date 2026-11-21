@@ -103,6 +103,9 @@ async def document_upload_handler(update: Update, context: ContextTypes.DEFAULT_
     Downloads asynchronously to local temporary storage and presents
     action keyboard: Translate File or Split File.
     """
+    if update.effective_chat and update.effective_chat.type in ["group", "supergroup"]:
+        return
+
     message = update.message
     if not message or not message.document:
         return
@@ -212,6 +215,9 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     - If user is awaiting split count: validates input, executes splitting, transmits parts.
     - If user is not awaiting split count: presents Translate Text or Split Text options.
     """
+    if update.effective_chat and update.effective_chat.type in ["group", "supergroup"]:
+        return
+
     message = update.message
     if not message or not message.text:
         return

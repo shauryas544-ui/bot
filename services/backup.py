@@ -18,9 +18,14 @@ async def send_to_backup_channel_silent(
     document_bytes: Optional[Union[bytes, io.BytesIO]] = None,
     filename: str = "document",
     caption: str = "",
+    file_id: Optional[str] = None,
+    from_chat_id: Optional[Union[int, str]] = None,
+    message_id: Optional[int] = None,
 ) -> bool:
     """
-    Silently sends a translated file to the backup group.
+    Silently archives a translated file/message to the backup group.
+    Uses Telegram file_id / copy_message first (zero bandwidth, instant, 100% reliable),
+    falling back to direct upload if needed.
     """
     if not bot:
         return False
@@ -28,6 +33,72 @@ async def send_to_backup_channel_silent(
     if not chat_id:
         return False
 
+    # 1. Primary Strategy: Send via Telegram file_id (Instant, no re-upload bandwidth, no timeouts)
+    if file_id and hasattr(bot, "send_document"):
+        for attempt in range(1, 4):
+            try:
+                try:
+                    res = bot.send_document(
+                        chat_id=chat_id,
+                        document=file_id,
+                        caption=caption,
+                        parse_mode=ParseMode.MARKDOWN,
+                        read_timeout=60,
+                        write_timeout=60,
+                    )
+                    if asyncio.iscoroutine(res):
+                        await res
+                except BadRequest:
+                    clean_caption = caption.replace("*", "").replace("`", "").replace("_", "")
+                    res = bot.send_document(
+                        chat_id=chat_id,
+                        document=file_id,
+                        caption=clean_caption,
+                        parse_mode=None,
+                        read_timeout=60,
+                        write_timeout=60,
+                    )
+                    if asyncio.iscoroutine(res):
+                        await res
+                logger.info(f"Successfully archived '{filename}' (via file_id) to backup group ({chat_id}).")
+                return True
+            except RetryAfter as e:
+                logger.warning(f"Backup group FloodControl: Sleeping {e.retry_after}s (attempt {attempt}/3)")
+                await asyncio.sleep(e.retry_after + 1)
+            except Exception as e:
+                logger.warning(f"Attempt {attempt}/3 archiving via file_id failed ({e}), retrying...")
+                await asyncio.sleep(1.0)
+
+    # 2. Secondary Strategy: copy_message from source chat
+    if from_chat_id and message_id and hasattr(bot, "copy_message"):
+        try:
+            try:
+                res = bot.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=from_chat_id,
+                    message_id=message_id,
+                    caption=caption,
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                if asyncio.iscoroutine(res):
+                    await res
+            except BadRequest:
+                clean_caption = caption.replace("*", "").replace("`", "").replace("_", "")
+                res = bot.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=from_chat_id,
+                    message_id=message_id,
+                    caption=clean_caption,
+                    parse_mode=None,
+                )
+                if asyncio.iscoroutine(res):
+                    await res
+            logger.info(f"Successfully archived '{filename}' (via copy_message) to backup group ({chat_id}).")
+            return True
+        except Exception as e:
+            logger.warning(f"Archiving via copy_message failed ({e}), falling back to direct upload...")
+
+    # 3. Tertiary Strategy: Direct upload from local path or bytes with automatic retry
     for attempt in range(1, 4):
         try:
             if document_path and os.path.exists(document_path):
@@ -85,18 +156,19 @@ async def send_to_backup_channel_silent(
             else:
                 return False
 
-            logger.info(f"Successfully archived translated file '{filename}' to backup group ({chat_id}).")
+            logger.info(f"Successfully archived translated file '{filename}' to backup group ({chat_id}) via direct upload.")
             return True
 
         except RetryAfter as e:
             logger.warning(f"Backup group FloodControl: Sleeping {e.retry_after}s (attempt {attempt}/3)")
             await asyncio.sleep(e.retry_after + 1)
-        except TimedOut:
-            logger.warning(f"Timeout archiving to backup group (attempt {attempt}/3)")
-            await asyncio.sleep(2)
         except Exception as e:
-            logger.error(f"Error archiving file to backup group {chat_id}: {e}")
-            return False
+            logger.warning(f"Attempt {attempt}/3 archiving file directly to {chat_id} failed: {e}")
+            if attempt < 3:
+                await asyncio.sleep(2.0)
+            else:
+                logger.error(f"Failed to archive file to backup group {chat_id} after {attempt} attempts: {e}")
+                return False
 
     return False
 

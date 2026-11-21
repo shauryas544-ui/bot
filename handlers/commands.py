@@ -117,3 +117,32 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
     await chat.send_message(status_text, parse_mode=ParseMode.MARKDOWN)
 
+
+async def set_backup_group_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /set_backup_group: Admin command to register current group as backup group.
+    """
+    chat = update.effective_chat
+    if not chat or chat.type not in ["group", "supergroup"]:
+        if update.message:
+            await update.message.reply_text("This command must be run inside the target backup group.")
+        return
+    save_backup_chat_id_to_env(str(chat.id))
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+
+async def my_chat_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Auto-detects when bot is added to or made admin of a group.
+    """
+    chat = update.effective_chat
+    if not chat or chat.type not in ["group", "supergroup"]:
+        return
+    if update.my_chat_member and update.my_chat_member.new_chat_member:
+        new_status = update.my_chat_member.new_chat_member.status
+        if new_status in ["administrator", "member"]:
+            save_backup_chat_id_to_env(str(chat.id))
+

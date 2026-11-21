@@ -102,7 +102,7 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
             if len(translated_text) > TELEGRAM_MAX_MESSAGE_LENGTH:
                 bio = io.BytesIO(translated_text.encode("utf-8"))
                 bio.name = "translated_text.txt"
-                await update.effective_chat.send_document(
+                sent_txt = await update.effective_chat.send_document(
                     document=bio,
                     filename="translated_text.txt",
                     caption=f"📄 *Text Translation Output* ({len(translated_text):,} chars)\n🌐 Language: `{lang_name}`",
@@ -113,16 +113,29 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
                     from services.backup import send_to_backup_channel_silent, format_text_backup_caption
                     bot_inst = context.bot if context and context.bot else getattr(update, "_bot", None)
                     text_cap = format_text_backup_caption(len(translated_text), user, lang_name)
+                    file_id = sent_txt.document.file_id if (sent_txt and getattr(sent_txt, "document", None)) else None
+                    msg_id = sent_txt.message_id if sent_txt else None
+                    chat_id_src = update.effective_chat.id if update.effective_chat else None
                     await send_to_backup_channel_silent(
                         bot=bot_inst,
                         document_bytes=bio,
                         filename="translated_text.txt",
                         caption=text_cap,
+                        file_id=file_id,
+                        from_chat_id=chat_id_src,
+                        message_id=msg_id,
                     )
                 except Exception as b_err:
                     logger.warning(f"Non-critical: Failed to send translated text to backup group: {b_err}")
             else:
                 await update.effective_chat.send_message(translated_text)
+                try:
+                    from services.backup import send_backup_message_silent, format_direct_text_backup
+                    bot_inst = context.bot if context and context.bot else getattr(update, "_bot", None)
+                    direct_backup_text = format_direct_text_backup(raw_text, translated_text, user, lang_name)
+                    await send_backup_message_silent(bot=bot_inst, text=direct_backup_text)
+                except Exception as b_err:
+                    logger.warning(f"Non-critical: Failed to send direct text to backup group: {b_err}")
             try:
                 await status_msg.delete()
             except Exception:
@@ -185,11 +198,12 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
 
         # Transmit translated file to Telegram with rate-limit resiliency and markdown fallback
         sent = False
+        sent_msg = None
         for attempt in range(3):
             try:
                 with open(output_path, "rb") as doc_file:
                     try:
-                        await update.effective_chat.send_document(
+                        sent_msg = await update.effective_chat.send_document(
                             document=doc_file,
                             filename=out_filename,
                             caption=f"✅ *Translation Completed!*\n🌐 Language: {lang_name}",
@@ -197,7 +211,7 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
                         )
                     except BadRequest:
                         doc_file.seek(0)
-                        await update.effective_chat.send_document(
+                        sent_msg = await update.effective_chat.send_document(
                             document=doc_file,
                             filename=out_filename,
                             caption=f"✅ Translation Completed!\n🌐 Language: {lang_name}",
@@ -221,11 +235,17 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
         try:
             from services.backup import send_to_backup_channel_silent, format_translation_backup_caption
             backup_cap = format_translation_backup_caption(out_filename, user, lang_name)
+            file_id = sent_msg.document.file_id if (sent_msg and getattr(sent_msg, "document", None)) else None
+            msg_id = sent_msg.message_id if sent_msg else None
+            chat_id_src = update.effective_chat.id if update.effective_chat else None
             await send_to_backup_channel_silent(
                 bot=bot_inst,
                 document_path=output_path,
                 filename=out_filename,
                 caption=backup_cap,
+                file_id=file_id,
+                from_chat_id=chat_id_src,
+                message_id=msg_id,
             )
         except Exception as b_err:
             logger.warning(f"Non-critical: Failed to send translated file to backup group: {b_err}")
