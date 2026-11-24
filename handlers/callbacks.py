@@ -2,7 +2,7 @@ import os
 import re
 import asyncio
 import logging
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import RetryAfter, TimedOut, BadRequest
 from telegram.ext import ContextTypes
@@ -62,6 +62,50 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     if data == "action_split":
         await handle_action_split(update, context)
+        return
+
+    if data == "split_cancel":
+        set_awaiting_split(user.id, False)
+        await query.answer("Splitting cancelled.")
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        return
+
+    if data.startswith("split_mode:"):
+        mode = data.split(":", 1)[1]
+        session = get_user_session(user.id)
+        session.split_mode = mode
+        set_awaiting_split(user.id, True)
+        await query.answer()
+
+        active_file = get_valid_active_file(user.id)
+        if mode == "size":
+            size_prompt = (
+                "💾 *File Splitting by Size (KB / MB)*\n\n"
+                "Enter the target size per file part:\n\n"
+                "📌 *Examples:*\n"
+                "• `500KB` or `250KB`\n"
+                "• `1MB` or `2.5MB`\n"
+                "• Or enter a number (e.g. `500` for 500 KB)\n\n"
+                "_Please reply with your desired size._"
+            )
+            await query.message.reply_text(size_prompt, parse_mode=ParseMode.MARKDOWN)
+        else:
+            if active_file and active_file.name != "text_message.txt":
+                ext = active_file.ext.lower()
+                if ext == ".pdf":
+                    prompt_text = "📖 *PDF Splitting by Pages*\n\nHow many pages per split PDF? (e.g. `5`, `10`, `20`)\n_Reply with a positive whole number._"
+                elif ext == ".epub":
+                    prompt_text = "📖 *EPUB Splitting by Chapters*\n\nHow many chapters per volume? (e.g. `5`, `10`)\n_Reply with a positive whole number._"
+                elif ext == ".docx":
+                    prompt_text = "📄 *DOCX Splitting by Paragraphs*\n\nHow many paragraphs per file? (e.g. `25`, `50`)\n_Reply with a positive whole number._"
+                else:
+                    prompt_text = "📝 *TXT Splitting by Lines*\n\nHow many lines per file? (e.g. `100`, `250`, `500`)\n_Reply with a positive whole number._"
+            else:
+                prompt_text = "📝 *Text Splitting by Lines*\n\nHow many lines per part? (e.g. `10`, `50`, `100`)\n_Reply with a positive whole number._"
+            await query.message.reply_text(prompt_text, parse_mode=ParseMode.MARKDOWN)
         return
 
     await query.answer("Unknown action.")
@@ -282,8 +326,7 @@ async def handle_action_translate(update: Update, context: ContextTypes.DEFAULT_
 
 async def handle_action_split(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Shifts user session into awaiting_split_count = True and prompts
-    for chunk count based on document format.
+    Presents choice of splitting mode: By Count (lines/pages/chapters) or By Size (KB/MB).
     """
     query = update.callback_query
     user = update.effective_user
@@ -291,7 +334,8 @@ async def handle_action_split(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     active_file = get_valid_active_file(user.id)
-    if not active_file:
+    session = get_user_session(user.id)
+    if not active_file and not session.active_text:
         await query.answer("⚠️ File session expired or file not found. Please upload again.", show_alert=True)
         clear_active_file(user.id, remove_file=False)
         return
@@ -299,37 +343,23 @@ async def handle_action_split(update: Update, context: ContextTypes.DEFAULT_TYPE
     set_awaiting_split(user.id, True)
     await query.answer()
 
-    ext = active_file.ext.lower()
-    if ext == ".pdf":
-        prompt_text = (
-            "📖 *PDF Splitting Selected*\n\n"
-            "How many pages per split PDF? (e.g., `5`, `10`, `20`)\n"
-            "_Please reply with a positive whole number._"
-        )
-    elif ext == ".epub":
-        prompt_text = (
-            "📖 *EPUB Splitting Selected*\n\n"
-            "How many chapters per volume? (e.g., `5`, `10`)\n"
-            "_Please reply with a positive whole number._"
-        )
-    elif ext == ".docx":
-        prompt_text = (
-            "📄 *DOCX Splitting Selected*\n\n"
-            "How many paragraphs per file? (e.g., `25`, `50`)\n"
-            "_Please reply with a positive whole number._"
-        )
-    elif ext == ".txt":
-        prompt_text = (
-            "📝 *TXT Splitting Selected*\n\n"
-            "How many lines per file? (e.g., `200`, `500`)\n"
-            "_Please reply with a positive whole number._"
-        )
-    else:
-        prompt_text = (
-            "✂️ *File Splitting Selected*\n\n"
-            "How many units per file chunk?\n"
-            "_Please reply with a positive whole number._"
-        )
+    keyboard = [
+        [
+            InlineKeyboardButton("🔢 By Lines / Pages", callback_data="split_mode:count"),
+            InlineKeyboardButton("💾 By File Size (KB/MB)", callback_data="split_mode:size"),
+        ],
+        [
+            InlineKeyboardButton("❌ Cancel", callback_data="split_cancel"),
+        ],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await query.message.reply_text(prompt_text, parse_mode=ParseMode.MARKDOWN)
+    file_label = active_file.name if active_file else "Text Message"
+    prompt_text = (
+        f"✂️ *Choose Split Method for `{file_label}`:*\n\n"
+        "• 🔢 *By Count:* Split by lines, paragraphs, pages, or chapters.\n"
+        "• 💾 *By File Size:* Split by maximum size (e.g. `500KB`, `2MB`).\n\n"
+        "Select your preferred method below:"
+    )
+    await query.message.reply_text(prompt_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 

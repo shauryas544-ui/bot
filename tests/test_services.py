@@ -41,6 +41,11 @@ from services.splitter import (
     split_epub,
     split_pdf,
     split_file,
+    parse_split_input,
+    split_txt_by_size,
+    split_docx_by_size,
+    split_epub_by_size,
+    split_pdf_by_size,
 )
 from handlers.commands import build_language_keyboard
 
@@ -359,6 +364,77 @@ class TestSplitterService(unittest.TestCase):
             self.assertEqual(len(r1.pages), 2)
             r3 = pypdf.PdfReader(parts[2])
             self.assertEqual(len(r3.pages), 1)
+        finally:
+            if os.path.exists(input_file):
+                os.remove(input_file)
+            for p in parts:
+                if os.path.exists(p):
+                    os.remove(p)
+
+    def test_parse_split_input(self):
+        # Size unit parsing
+        m, v = parse_split_input("500KB")
+        self.assertEqual(m, "size")
+        self.assertEqual(v, 500 * 1024)
+
+        m, v = parse_split_input("2MB")
+        self.assertEqual(m, "size")
+        self.assertEqual(v, 2 * 1024 * 1024)
+
+        m, v = parse_split_input("1.5 mb")
+        self.assertEqual(m, "size")
+        self.assertEqual(v, int(1.5 * 1024 * 1024))
+
+        # Plain number with default "count"
+        m, v = parse_split_input("50", default_mode="count")
+        self.assertEqual(m, "count")
+        self.assertEqual(v, 50)
+
+        # Plain number with default "size"
+        m, v = parse_split_input("200", default_mode="size")
+        self.assertEqual(m, "size")
+        self.assertEqual(v, 200 * 1024)
+
+        # Invalid formats
+        with self.assertRaises(ValueError):
+            parse_split_input("invalid")
+        with self.assertRaises(ValueError):
+            parse_split_input("-50KB")
+        with self.assertRaises(ValueError):
+            parse_split_input("0")
+
+    def test_split_txt_by_size(self):
+        input_file = os.path.join(TEMP_DIR, "test_split_size.txt")
+        with open(input_file, "w", encoding="utf-8") as f:
+            for i in range(100):
+                f.write(f"This is line number {i} with some extra padding to reach target bytes.\n")
+
+        parts = []
+        try:
+            parts = split_txt_by_size(input_file, max_bytes=1024, original_filename="test_split_size.txt")
+            self.assertGreater(len(parts), 1)
+            for p in parts:
+                self.assertTrue(os.path.exists(p))
+                self.assertGreater(os.path.getsize(p), 0)
+        finally:
+            if os.path.exists(input_file):
+                os.remove(input_file)
+            for p in parts:
+                if os.path.exists(p):
+                    os.remove(p)
+
+    def test_split_file_size_mode_router(self):
+        input_file = os.path.join(TEMP_DIR, "test_router_size.txt")
+        with open(input_file, "w", encoding="utf-8") as f:
+            for i in range(50):
+                f.write(f"Line content {i}\n")
+
+        parts = []
+        try:
+            parts = split_file(input_file, ".txt", chunk_size=512, original_filename="test_router_size.txt", split_mode="size")
+            self.assertGreater(len(parts), 1)
+            for p in parts:
+                self.assertTrue(os.path.exists(p))
         finally:
             if os.path.exists(input_file):
                 os.remove(input_file)

@@ -264,6 +264,7 @@ class UserSession:
     active_file: Optional[ActiveFile] = None
     active_text: Optional[str] = None
     awaiting_split_count: bool = False
+    split_mode: str = "count"
     last_interaction: float = field(default_factory=time.time)
 
 
@@ -341,6 +342,22 @@ def set_awaiting_split(user_id: int, awaiting: bool) -> None:
     """Update awaiting_split_count state flag."""
     session = get_user_session(user_id)
     session.awaiting_split_count = awaiting
+
+
+def set_split_mode(user_id: int, mode: str) -> None:
+    """Update split_mode state ('count' or 'size')."""
+    session = get_user_session(user_id)
+    session.split_mode = mode
+
+
+def format_file_size(size_bytes: int) -> str:
+    """Formats raw bytes into a human-readable size string."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    else:
+        return f"{size_bytes / (1024 * 1024):.2f} MB"
 
 
 def cleanup_expired_temp_files(max_age_seconds: int = SESSION_TTL_SECONDS) -> int:

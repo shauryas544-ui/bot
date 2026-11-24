@@ -230,22 +230,20 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     raw_text = message.text.strip()
 
     # -----------------------------------------------------------------------
-    # Case 1: User is responding to "Split File" prompt with chunk count
+    # Case 1: User is responding to "Split File" prompt with count or size
     # -----------------------------------------------------------------------
     if session.awaiting_split_count:
         try:
-            chunk_count = int(raw_text)
-            if chunk_count <= 0:
-                raise ValueError("Must be positive")
-        except ValueError:
+            from services.splitter import parse_split_input
+            split_mode, split_value = parse_split_input(raw_text, default_mode=getattr(session, "split_mode", "count"))
+        except ValueError as err:
             await message.reply_text(
-                "⚠️ *Invalid input!*\n"
-                "Please enter a valid positive whole number (e.g., `5`, `25`, `100`).",
+                f"⚠️ *Invalid input!*\n{err}\n\nPlease enter a number (e.g. `50`) or size (e.g. `500KB`, `2MB`).",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
 
-        # Valid count received: Reset awaiting flag
+        # Valid input received: Reset awaiting flag
         set_awaiting_split(user.id, False)
 
         active_file = get_valid_active_file(user.id)
@@ -259,8 +257,14 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             clear_active_file(user.id, remove_file=False)
             return
 
+        from config import format_file_size
+        if split_mode == "size":
+            split_desc = f"max size ~{format_file_size(split_value)}"
+        else:
+            split_desc = f"chunks of {split_value}"
+
         status_msg = await message.reply_text(
-            f"✂️ *Splitting `{active_file.name}` into chunks of {chunk_count}...*\n"
+            f"✂️ *Splitting `{active_file.name}` ({split_desc})...*\n"
             "Please wait...",
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -275,8 +279,9 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 split_file,
                 active_file.path,
                 active_file.ext,
-                chunk_count,
+                split_value,
                 active_file.name,
+                split_mode,
             )
 
             total_parts = len(generated_parts)
